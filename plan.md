@@ -1232,6 +1232,139 @@ Decisions:
   and empirical calibration. Phase 5 remains responsible for the public CLI, PR/nightly
   scheduling, worker resource limits, and artifact publication.
 
+Implementation decisions and discoveries (2026-11-10):
+
+- `lib_dst.profiles` now owns immutable `StructuralBudgets`, resolved
+  `WorkloadProfile` values, realized `WorkloadMetrics`, and the six named profile
+  defaults. `lib_dst.scale_generator` materializes all topology, independent domain
+  seeds, observations, oracle probes, resolved profile values, and realized metrics in
+  each trace. The original `generate_trace(seed)` API and schema-1 traces remain valid.
+- Observation specs gained optional logical cell samples. Absence still means full-cube
+  observation for old traces; scale traces materialize their sampled addresses, always
+  retaining oracle targets and input boundaries. Execution reports retain the original
+  primary oracle fields and add optional per-probe results.
+- Generated topology now covers multiple dimensions and items, single- and
+  multidimensional cubes, anchored rules, cross-rule and cross-cube acyclic dependency
+  chains, configurable fan-out, hierarchy outlines, stored views, transient cube churn,
+  repeated recalculation, persistence cycles, and format/UDF operations on their
+  dedicated stress axes. The six ordinary profiles all pass real-engine convergence.
+- Phase 4.5 exposes `generate_profile_trace`, `generate_stress_axis_trace`,
+  `run_stress_default`, `run_limit_discovery`, and `calibrate_profiles` as library APIs.
+  The worker's hidden `--stress-point-stdin` switch is an internal subprocess protocol,
+  not the Phase 5 public CLI. `stress_default` currently contains twenty independent
+  axes: serialized AST depth, built-in nesting, expression width, UDF depth, cube count,
+  rule count, dimension count, cube rank, dimension cardinality, hierarchy depth and
+  breadth, dependency depth and fan-out, populated cells, persistence cycles, event
+  volume, recalculation churn, view count, format volume, and model churn.
+- Limit discovery records every attempted point, grows geometrically, refines a
+  monotonic passing/failing bracket, resumes from prior reports, emits a safety-ceiling
+  point when no failure is observed, and reports an envelope when retained evidence is
+  non-monotonic. Report identity excludes volatile measurements and resume mechanics.
+- Stress classification is a three-part verdict/origin/kind value. Clean child results,
+  normalized failures, exit status, stderr tail, environment, and revision are retained
+  separately. Memory/resource exhaustion is claimed only for `MemoryError`, an enforced
+  limit, or a recognized platform status; unrecognized exits remain
+  `unknown_abnormal_exit`. A completed correctness pass may separately be marked as an
+  environment-specific `performance_boundary`.
+- Scale traces have exact recorded mutations for cardinality, populated density, new
+  rules, dependency graph edges, and recalculation bursts. Realized metrics are
+  recomputed and revalidated after mutation. Profile-aware shrinking first regenerates a
+  smaller valid topology and retains it only when the normalized failure signature is
+  unchanged. Corpus entries record profile/scale strata, and stratum rarity contributes
+  to deterministic selection. Evolution accepts `(profile, seed)` initializers.
+- Calibration runs in clean workers and records elapsed time, traced peak memory, trace
+  and report sizes, the actual serialized persistence payload, and a seeded shrink's
+  duration/candidate count. Volatile values do not enter deterministic report identity.
+- The dedicated UDF axis found that the registered `create_udf` command currently fails
+  because the public `Engine` facade does not expose `udf_registry`. The dedicated format
+  axis found that semantic `Dimension.Item` selectors reach the ID-addressed hard-value
+  API without being resolved to stable item IDs. Both are preserved as replayable
+  `controlled_engine_error` outcomes; the harness does not bypass the command boundary or
+  patch OM Core internals. Ordinary profiles keep these two counts at zero until the
+  production command surfaces are repaired.
+- Phase 3.5 script export retains its established supported-operation contract. JSON
+  remains the replay authority for expanded scale traces containing operations that the
+  OpenM script language/exporter cannot yet represent faithfully.
+
+Known command-boundary defects and reproduction:
+
+1. UDF creation cannot cross the public `Engine` facade.
+
+   Reproduce from the repository root in PowerShell:
+
+   ```powershell
+   .venv\Scripts\python.exe -c "import json; from lib_dst.scale_generator import generate_stress_axis_trace; from lib_dst.stress import run_stress_point_in_worker; t=generate_stress_axis_trace(4500, 'udf_depth', 1); r=run_stress_point_in_worker(t, axis='udf_depth', requested_value=1); print(json.dumps(r.to_dict(), sort_keys=True))"
+   ```
+
+   Current deterministic result:
+
+   - verdict/origin/kind: `failed / engine / controlled_engine_error`;
+   - normalized code: `RuntimeError`;
+   - underlying command error: `Operation ... (create_udf) failed: 'Engine' object has no
+     attribute 'udf_registry'`;
+   - the generated trace and its SHA-256 remain available in the point result for replay.
+
+   Cause and call path:
+
+   - `lib_dst.executor.execute_operations` sends the registered `create_udf` command
+     through `runtime.session.execute`;
+   - `lib_command.commands.udf_commands.cmd_create_udf` calls
+     `engine.udf_registry.register(...)`;
+   - the runtime supplies the public `lib_openm.api.Engine` facade. Its `__getattr__`
+     delegates only names beginning with `_` and therefore rejects `udf_registry`;
+   - the registry exists on private `_EngineCore`, but reaching into `_core` from the
+     harness or command would hide the missing public contract rather than repair it.
+
+   Required production repair: expose facade-level UDF registration/query/deletion
+   methods (preferred), or another explicit public UDF port, and make the command use that
+   surface. Add a command-through-session test that creates, evaluates, persists, reloads,
+   and deletes a UDF without accessing `_EngineCore` directly.
+
+2. Formatting writes semantic selectors into an item-ID address API.
+
+   Reproduce from the repository root in PowerShell:
+
+   ```powershell
+   .venv\Scripts\python.exe -c "import json; from lib_dst.scale_generator import generate_stress_axis_trace; from lib_dst.stress import run_stress_point_in_worker; t=generate_stress_axis_trace(4500, 'format_volume', 2); r=run_stress_point_in_worker(t, axis='format_volume', requested_value=2); print(json.dumps(r.to_dict(), sort_keys=True))"
+   ```
+
+   Current deterministic result:
+
+   - verdict/origin/kind: `failed / engine / controlled_engine_error`;
+   - normalized stage/code: `observation.address / invalid-item-key`;
+   - the invalid key has the semantic form `ScaleDim000.Item0000` where canonical cube
+     storage expects the stable item ID for that dimension;
+   - the formatting command reports success, and canonical observation detects the mixed
+     address representation afterward.
+
+   Cause and call path:
+
+   - the harness calls the registered `set_property` command with an address target and
+     `format.bold`. An earlier harness draft called the obsolete bare `set` command; that
+     harness-side command-ID error has been corrected and is not the production cause;
+   - `cmd_set` correctly dispatches to `cmd_set_format`, which parses the semantic target;
+   - `_set_format_at_address` splits the target into strings such as
+     `ScaleDim000.Item0000` and passes those strings directly to
+     `engine.set_cell_hardvalue_by_addr` with the technical format channel;
+   - `set_cell_hardvalue_by_addr` normalizes channel placement but treats the remaining
+     tuple members as item IDs. The semantic strings are consequently stored as cube keys;
+   - `observe_workspace` now raises `ObservationAddressError` for this malformed state, so
+     the harness reports a controlled engine-boundary failure instead of an ambiguous
+     worker `KeyError`.
+
+   Required production repair: resolve every semantic `Dimension.Item` selector to its
+   stable item ID before invoking the ID-addressed API, reject missing/duplicate/wrong-
+   dimension selectors, and do not report success when no cell was formatted. Add command,
+   canonical-observation, save/load, and one-dimensional formatting tests. The current
+   helper also returns no affected cell for fewer than two selectors, so one-dimensional
+   cubes require explicit coverage in the repair.
+
+Both defects can be checked together with:
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_dst_phase45.py -q -k "udf_and_format"
+```
+
 Validation:
 
 - Repeated generation of every profile with the same master seed produces byte-identical
@@ -1268,6 +1401,23 @@ to assign small, scheduled, nightly, `stress_default`, and opt-in limit-discover
 without changing trace semantics. Stress reports preserve every attempted point, attribute
 known failures to the correct boundary, and explicitly leave ambiguous terminations
 unclassified rather than reporting a misleading maximum.
+
+Validation performed (2026-11-10):
+
+- `.venv/Scripts/python.exe -m pytest tests/test_dst_phase45.py -q`: 27 passed.
+- All Phase 0-4.5 DST modules together: 130 passed.
+- `.venv/Scripts/python.exe -m pytest tests -q`: 138 passed.
+- `.venv/Scripts/python.exe -m compileall -q lib_dst`: passed.
+- `git diff --check`: passed with only line-ending conversion warnings.
+- Two complete `stress_default` campaigns with master seed `4500` produced identical
+  deterministic identity SHA-256
+  `6ced520d98186a3330a91508e4841eb1457db9333e83dd857d2c3c35e177d7bb`.
+  Eighteen axes passed; UDF depth and format volume deterministically reproduced the two
+  command-surface errors documented above.
+- A six-profile calibration with master seed `4500` passed every profile. Observed
+  serialized persistence payloads ranged from 23,937 to 198,942 bytes, traced peak memory
+  from 2,432,275 to 6,968,100 bytes, and seeded shrink work from 3 to 6 candidates. These
+  measurements describe this environment and are not portable limits.
 
 ### Phase 5: CI and scale
 

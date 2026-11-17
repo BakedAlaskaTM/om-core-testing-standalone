@@ -10,6 +10,19 @@ from lib_openm.rule_eval.utils import CellError
 from lib_openm.technical_ids import AT_ID_TO_CHANNEL
 
 
+class ObservationAddressError(RuntimeError):
+    """Engine state contains a cube address that is not keyed by item IDs."""
+
+    def __init__(self, cube: str, dimension_id: str, item_key: str) -> None:
+        self.cube = cube
+        self.dimension_id = dimension_id
+        self.item_key = item_key
+        super().__init__(
+            f"Cube {cube!r} contains unknown item key {item_key!r} "
+            f"for dimension {dimension_id!r}"
+        )
+
+
 def _canonical_value(value: Any) -> Any:
     if isinstance(value, CellError):
         return {"error": value.code}
@@ -35,6 +48,9 @@ def _canonical_value(value: Any) -> Any:
 def observe_workspace(workspace: Any, spec: ObservationSpec) -> CanonicalObservation:
     dimensions_by_name = {dim.name: dim for dim in workspace.dimensions.values()}
     cubes_by_name = {cube.name: cube for cube in workspace.cubes.values()}
+    sampled_addresses: dict[str, set[tuple[str, ...]]] = {}
+    for cell in spec.cells:
+        sampled_addresses.setdefault(cell.cube, set()).add(tuple(cell.address))
 
     dimensions: list[dict[str, Any]] = []
     for name in sorted(spec.dimensions):
@@ -50,6 +66,11 @@ def observe_workspace(workspace: Any, spec: ObservationSpec) -> CanonicalObserva
     cubes: list[dict[str, Any]] = []
     for name in sorted(spec.cubes):
         cube = cubes_by_name[name]
+        item_names = {
+            dim_id: {item.id: item.name for item in workspace.dimensions[dim_id].items}
+            for dim_id in cube.dimension_ids
+            if dim_id != "@"
+        }
         dimension_names = [
             "@" if dim_id == "@" else workspace.dimensions[dim_id].name
             for dim_id in cube.dimension_ids
@@ -62,9 +83,14 @@ def observe_workspace(workspace: Any, spec: ObservationSpec) -> CanonicalObserva
                     channel = AT_ID_TO_CHANNEL.get(item_id, item_id)
                     logical_address.append(f"@.{channel}")
                 else:
-                    dimension = workspace.dimensions[dim_id]
-                    item = next(item for item in dimension.items if item.id == item_id)
-                    logical_address.append(item.name)
+                    try:
+                        logical_address.append(item_names[dim_id][item_id])
+                    except KeyError as exc:
+                        raise ObservationAddressError(
+                            cube.name, dim_id, str(item_id)
+                        ) from exc
+            if name in sampled_addresses and tuple(logical_address) not in sampled_addresses[name]:
+                continue
             values.append(
                 {
                     "address": logical_address,

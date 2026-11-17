@@ -52,22 +52,42 @@ class EnvironmentDescriptor:
 
 
 @dataclass(frozen=True)
+class ObservationCell:
+    cube: str
+    address: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ObservationCell":
+        return cls(cube=str(value["cube"]), address=tuple(value["address"]))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"cube": self.cube, "address": list(self.address)}
+
+
+@dataclass(frozen=True)
 class ObservationSpec:
     dimensions: tuple[str, ...] = ()
     cubes: tuple[str, ...] = ()
+    cells: tuple[ObservationCell, ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ObservationSpec":
         return cls(
             dimensions=tuple(value.get("dimensions", ())),
             cubes=tuple(value.get("cubes", ())),
+            cells=tuple(
+                ObservationCell.from_dict(cell) for cell in value.get("cells", ())
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value: dict[str, Any] = {
             "dimensions": list(self.dimensions),
             "cubes": list(self.cubes),
         }
+        if self.cells:
+            value["cells"] = [cell.to_dict() for cell in self.cells]
+        return value
 
 
 @dataclass(frozen=True)
@@ -162,16 +182,20 @@ class ExecutionReport:
     oracle_expected: dict[str, Any]
     oracle_actual: Any
     oracle_passed: bool
+    oracle_probes: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
+        oracle: dict[str, Any] = {
+            "expected": self.oracle_expected,
+            "actual": self.oracle_actual,
+            "passed": self.oracle_passed,
+        }
+        if self.oracle_probes:
+            oracle["probes"] = list(self.oracle_probes)
         return {
             "trace_sha256": self.trace_sha256,
             "observation": self.observation.to_dict(),
-            "oracle": {
-                "expected": self.oracle_expected,
-                "actual": self.oracle_actual,
-                "passed": self.oracle_passed,
-            },
+            "oracle": oracle,
         }
 
     def to_json(self) -> str:

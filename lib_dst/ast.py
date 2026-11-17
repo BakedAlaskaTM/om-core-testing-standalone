@@ -80,7 +80,13 @@ class Call:
     def __post_init__(self) -> None:
         function = self.function.upper()
         object.__setattr__(self, "function", function)
-        limits = {"IF": (3, 3), "SUM": (1, 4), "AVG": (1, 4), "ROUND": (1, 2)}
+        limits = {
+            "IF": (3, 3),
+            "SUM": (1, 256),
+            "AVG": (1, 256),
+            "ROUND": (1, 2),
+            "ABS": (1, 1),
+        }
         if function not in limits:
             raise ValueError(f"Unsupported numeric function: {function}")
         lower, upper = limits[function]

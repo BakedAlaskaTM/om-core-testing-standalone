@@ -129,6 +129,45 @@ def execute_convergence(
     except Exception as exc:
         _raise_stage("persistence.load", exc)
 
+    workload = trace.metadata.get("workload", {})
+    persistence_cycles = max(1, int(workload.get("persistence_cycles", 1)))
+    for cycle in range(1, persistence_cycles):
+        cycle_runtime = create_trace_runtime(
+            trace,
+            workspace=loaded_workspace,
+            workspace_adapter=adapter,
+            snapshot_adapter=snapshots,
+        )
+        try:
+            _command(
+                cycle_runtime,
+                f"persistence.cycle.{cycle}.configure",
+                "set_multithread_recompute",
+                enabled=False,
+            )
+            try:
+                cycle_runtime.engine.bootstrap_dependency_graph()
+            except Exception as exc:
+                _raise_stage(f"persistence.cycle.{cycle}.bootstrap", exc)
+            _command(
+                cycle_runtime,
+                f"persistence.cycle.{cycle}.recalculate",
+                "run_recalculation",
+                scope="all",
+            )
+            _command(
+                cycle_runtime,
+                f"persistence.cycle.{cycle}.save",
+                "save_workspace",
+                path=PERSISTENCE_PATH,
+            )
+        finally:
+            reset_runtime_state(cycle_runtime)
+        try:
+            loaded_workspace = adapter.load_workspace(PERSISTENCE_PATH)
+        except Exception as exc:
+            _raise_stage(f"persistence.cycle.{cycle}.load", exc)
+
     runtime_b = create_trace_runtime(
         trace,
         workspace=loaded_workspace,

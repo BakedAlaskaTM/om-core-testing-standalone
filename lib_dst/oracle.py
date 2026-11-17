@@ -58,6 +58,8 @@ def evaluate(expression: NumericExpr, values: Mapping[str, int]) -> OracleValue:
             return sum(numbers, Fraction())
         if expression.function == "AVG":
             return sum(numbers, Fraction()) / len(numbers)
+        if expression.function == "ABS":
+            return abs(numbers[0])
         value = numbers[0]
         places = int(numbers[1]) if len(numbers) == 2 else 0
         places = max(0, places)

@@ -14,6 +14,7 @@ from lib_dst.failures import FailureOutcome, capture_failure
 from lib_dst.generator import generate_trace
 from lib_dst.mutation import MutationDecision, mutate_trace
 from lib_dst.runner import run_candidate_in_worker
+from lib_dst.scale_generator import generate_profile_trace
 from lib_dst.schemas import TraceTranscript
 from lib_dst.shrinker import shrink_failure
 
@@ -95,14 +96,20 @@ class EvolutionCoordinator:
         *,
         initial_seeds: Iterable[int] = (0,),
         initial_traces: Iterable[TraceTranscript] = (),
+        initial_profiles: Iterable[tuple[str, int | str]] = (),
         iterations: int = 0,
     ) -> EvolutionReport:
         if iterations < 0:
             raise ValueError("Evolution iterations cannot be negative")
         seeds = tuple(initial_seeds)
         traces = tuple(initial_traces)
+        profiles = tuple(initial_profiles)
         generation = 0
-        for trace in (*[generate_trace(seed) for seed in seeds], *traces):
+        for trace in (
+            *[generate_trace(seed) for seed in seeds],
+            *[generate_profile_trace(seed, profile) for profile, seed in profiles],
+            *traces,
+        ):
             self._evaluate(trace, generation=generation, parent_sha256=None)
             generation += 1
 
@@ -125,7 +132,7 @@ class EvolutionCoordinator:
 
         return EvolutionReport(
             master_seed=self.master_seed,
-            initial_count=len(seeds) + len(traces),
+            initial_count=len(seeds) + len(profiles) + len(traces),
             iterations=iterations,
             retained=self._retained,
             corpus=tuple(sorted(self.store.entries)),

@@ -95,3 +95,26 @@ def run_candidate_in_worker(
         env=environment,
     )
     return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def run_stress_in_worker(
+    trace: TraceTranscript,
+    *,
+    axis: str,
+    requested_value: int,
+    python_hash_seed: str = "1",
+    timeout_seconds: float | None = None,
+    performance_threshold_seconds: float | None = None,
+):
+    """Run one Phase 4.5 point through its evidence-preserving worker boundary."""
+
+    from lib_dst.stress import run_stress_point_in_worker
+
+    return run_stress_point_in_worker(
+        trace,
+        axis=axis,
+        requested_value=requested_value,
+        python_hash_seed=python_hash_seed,
+        timeout_seconds=timeout_seconds,
+        performance_threshold_seconds=performance_threshold_seconds,
+    )

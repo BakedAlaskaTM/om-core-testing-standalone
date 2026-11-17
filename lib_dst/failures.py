@@ -8,6 +8,7 @@ from typing import Any
 
 from lib_dst.faults import PersistenceFaultError
 from lib_dst.invariants import Phase2StageError, execute_convergence
+from lib_dst.observation import ObservationAddressError
 from lib_dst.schemas import ConvergenceReport, TraceTranscript
 from lib_dst.validation import TraceValidationError, validate_trace
 
@@ -49,7 +50,12 @@ class FailureOutcome:
         return json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
 
 
-def capture_failure(trace: TraceTranscript) -> FailureOutcome:
+def capture_failure(
+    trace: TraceTranscript,
+    *,
+    workspace_adapter=None,
+    snapshot_adapter=None,
+) -> FailureOutcome:
     try:
         validate_trace(trace)
     except TraceValidationError as exc:
@@ -59,7 +65,11 @@ def capture_failure(trace: TraceTranscript) -> FailureOutcome:
         )
 
     try:
-        report = execute_convergence(trace)
+        report = execute_convergence(
+            trace,
+            workspace_adapter=workspace_adapter,
+            snapshot_adapter=snapshot_adapter,
+        )
     except PersistenceFaultError as exc:
         return FailureOutcome(
             trace.sha256(),
@@ -70,6 +80,11 @@ def capture_failure(trace: TraceTranscript) -> FailureOutcome:
         return FailureOutcome(
             trace.sha256(),
             FailureSignature(category, exc.stage, exc.code),
+        )
+    except ObservationAddressError:
+        return FailureOutcome(
+            trace.sha256(),
+            FailureSignature("runtime", "observation.address", "invalid-item-key"),
         )
     except Exception as exc:
         return FailureOutcome(

@@ -27,6 +27,8 @@ class CorpusEntry:
     last_selected_generation: int
     selection_count: int = 0
     parent_sha256: str | None = None
+    profile: str = "legacy"
+    scale_stratum: str = "legacy:small"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +41,8 @@ class CorpusEntry:
             "last_selected_generation": self.last_selected_generation,
             "selection_count": self.selection_count,
             "parent_sha256": self.parent_sha256,
+            "profile": self.profile,
+            "scale_stratum": self.scale_stratum,
         }
 
     @classmethod
@@ -57,6 +61,8 @@ class CorpusEntry:
             last_selected_generation=int(value["last_selected_generation"]),
             selection_count=int(value.get("selection_count", 0)),
             parent_sha256=value.get("parent_sha256"),
+            profile=str(value.get("profile", "legacy")),
+            scale_stratum=str(value.get("scale_stratum", "legacy:small")),
         )
 
 
@@ -124,6 +130,7 @@ class CorpusStore:
             return RetentionDecision(False, digest, new_arcs, new_features, new_failure)
 
         payload = trace.to_json()
+        profile, scale_stratum = profile_scale_stratum(trace)
         entry = CorpusEntry(
             trace_sha256=digest,
             size_bytes=len(payload.encode("utf-8")),
@@ -133,6 +140,8 @@ class CorpusStore:
             discovered_generation=generation,
             last_selected_generation=generation,
             parent_sha256=parent_sha256,
+            profile=profile,
+            scale_stratum=scale_stratum,
         )
         self._write_text_once(self.traces_dir / f"{digest}.json", payload)
         self.entries[digest] = entry
@@ -149,11 +158,15 @@ class CorpusStore:
     def selection_weights(self, generation: int) -> dict[str, int]:
         coverage_frequency: dict[str, int] = {}
         feature_frequency: dict[str, int] = {}
+        stratum_frequency: dict[str, int] = {}
         for entry in self.entries.values():
             for arc in entry.coverage:
                 coverage_frequency[arc] = coverage_frequency.get(arc, 0) + 1
             for feature in entry.features:
                 feature_frequency[feature] = feature_frequency.get(feature, 0) + 1
+            stratum_frequency[entry.scale_stratum] = (
+                stratum_frequency.get(entry.scale_stratum, 0) + 1
+            )
 
         weights: dict[str, int] = {}
         for digest, entry in sorted(self.entries.items()):
@@ -165,8 +178,12 @@ class CorpusStore:
             )
             age = max(1, generation - entry.last_selected_generation + 1)
             size_bias = max(1, 1_000_000 // max(1, entry.size_bytes))
+            stratum_rarity = 2_000 // stratum_frequency[entry.scale_stratum]
             weights[digest] = max(
-                1, (1 + arc_rarity + feature_rarity) * age * size_bias
+                1,
+                (1 + arc_rarity + feature_rarity + stratum_rarity)
+                * age
+                * size_bias,
             )
         return weights
 
@@ -286,6 +303,32 @@ def semantic_features(trace: TraceTranscript) -> tuple[str, ...]:
     for decision in scheduler.get("decisions", ()) if isinstance(scheduler, dict) else ():
         features.add(f"scheduler:{decision.get('mode')}")
     return tuple(sorted(features))
+
+
+def profile_scale_stratum(trace: TraceTranscript) -> tuple[str, str]:
+    workload = trace.metadata.get("workload", {})
+    profile_value = workload.get("profile", {}) if isinstance(workload, dict) else {}
+    profile = (
+        str(profile_value.get("name", "legacy"))
+        if isinstance(profile_value, dict)
+        else "legacy"
+    )
+    metrics = workload.get("metrics", {}) if isinstance(workload, dict) else {}
+    if not isinstance(metrics, dict):
+        metrics = {}
+    complexity = (
+        int(metrics.get("populated_cells", 0))
+        + int(metrics.get("rules", 0)) * 4
+        + int(metrics.get("dependency_edges", 0)) * 2
+        + int(metrics.get("operations", len(trace.operations)))
+    )
+    if complexity < 100:
+        bucket = "small"
+    elif complexity < 1_000:
+        bucket = "medium"
+    else:
+        bucket = "large"
+    return profile, f"{profile}:{bucket}"
 
 
 def _walk_ast(value: dict[str, Any]):

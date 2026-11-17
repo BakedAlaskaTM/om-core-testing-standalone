@@ -11,6 +11,8 @@ class SymbolKind(str, Enum):
     DIMENSION = "dimension"
     ITEM = "item"
     CUBE = "cube"
+    UDF = "udf"
+    VIEW = "view"
 
 
 @dataclass(frozen=True)

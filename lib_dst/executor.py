@@ -51,6 +51,24 @@ def _actual_oracle_value(observation: Any, target: dict[str, Any]) -> Any:
     return None
 
 
+def _runtime_outline(value: list[dict[str, Any]], symbols: SymbolTable) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for node in value:
+        item = node.get("item")
+        result.append(
+            {
+                "label": str(node["label"]),
+                "item_id": (
+                    symbols.runtime_id(str(item), SymbolKind.ITEM)
+                    if item is not None
+                    else None
+                ),
+                "children": _runtime_outline(list(node.get("children", ())), symbols),
+            }
+        )
+    return result
+
+
 def create_trace_runtime(
     trace: TraceTranscript,
     *,
@@ -127,6 +145,46 @@ def execute_operations(runtime: Any, trace: TraceTranscript) -> SymbolTable:
                 SymbolKind.CUBE,
             )
             continue
+        elif operation.kind == "create_udf":
+            result = runtime.session.execute(
+                "create_udf",
+                name=args["name"],
+                params=list(args["params"]),
+                expression=args["expression"],
+            )
+            _require_success(result, operation)
+            symbols.bind(operation.target, str(args["name"]), SymbolKind.UDF)
+            continue
+        elif operation.kind == "set_dimension_outline":
+            result = runtime.session.execute(
+                "set_dimension_outline",
+                dim_id=symbols.runtime_id(operation.target, SymbolKind.DIMENSION),
+                outline=_runtime_outline(list(args["outline"]), symbols),
+            )
+        elif operation.kind == "create_view":
+            result = runtime.session.execute(
+                "create_view",
+                name=args["name"],
+                cube_id=symbols.runtime_id(args["cube"], SymbolKind.CUBE),
+                row_dims=[
+                    symbols.runtime_id(handle, SymbolKind.DIMENSION)
+                    for handle in args.get("rows", ())
+                ],
+                col_dims=[
+                    symbols.runtime_id(handle, SymbolKind.DIMENSION)
+                    for handle in args.get("cols", ())
+                ],
+                page_dim_ids=[
+                    symbols.runtime_id(handle, SymbolKind.DIMENSION)
+                    for handle in args.get("pages", ())
+                ],
+            )
+            symbols.bind(
+                operation.target,
+                _require_success(result, operation)["id"],
+                SymbolKind.VIEW,
+            )
+            continue
         elif operation.kind == "set_cell_hardvalue":
             result = runtime.session.execute(
                 "set_cell_hardvalue_by_addr",
@@ -138,6 +196,19 @@ def execute_operations(runtime: Any, trace: TraceTranscript) -> SymbolTable:
                         for handle in args["address"]
                     ],
                 ],
+                value=args["value"],
+            )
+        elif operation.kind == "set_cell_channel":
+            cube_id = symbols.runtime_id(operation.target, SymbolKind.CUBE)
+            selectors = []
+            for handle in args["address"]:
+                item = symbols.require(handle, SymbolKind.ITEM)
+                dimension = symbols.require(str(item.owner), SymbolKind.DIMENSION)
+                selectors.append(f"{dimension.name}.{item.name}")
+            result = runtime.session.execute(
+                "set_property",
+                target=f"{cube_id}::" + ":".join(selectors),
+                property=f"format.{args['channel']}",
                 value=args["value"],
             )
         elif operation.kind == "set_rule":
@@ -152,6 +223,11 @@ def execute_operations(runtime: Any, trace: TraceTranscript) -> SymbolTable:
             result = runtime.session.execute(
                 "run_recalculation", scope=args.get("scope", "all")
             )
+        elif operation.kind == "delete_cube":
+            result = runtime.session.execute(
+                "delete_cube",
+                cube_id=symbols.runtime_id(operation.target, SymbolKind.CUBE),
+            )
         else:
             raise ValueError(f"Unsupported DST operation: {operation.kind}")
         _require_success(result, operation)
@@ -164,12 +240,26 @@ def report_runtime(runtime: Any, trace: TraceTranscript) -> ExecutionReport:
     oracle = trace.metadata["oracle"]
     actual = _actual_oracle_value(observation, oracle["target"])
     expected = oracle["expected"]
+    probe_results: list[dict[str, Any]] = []
+    for probe in oracle.get("probes", ()):
+        probe_actual = _actual_oracle_value(observation, probe["target"])
+        probe_expected = probe["expected"]
+        probe_results.append(
+            {
+                "target": probe["target"],
+                "expected": probe_expected,
+                "actual": probe_actual,
+                "passed": matches(probe_expected, probe_actual),
+            }
+        )
     return ExecutionReport(
         trace_sha256=trace.sha256(),
         observation=observation,
         oracle_expected=expected,
         oracle_actual=actual,
-        oracle_passed=matches(expected, actual),
+        oracle_passed=matches(expected, actual)
+        and all(probe["passed"] for probe in probe_results),
+        oracle_probes=tuple(probe_results),
     )
 
 

@@ -20,6 +20,7 @@ from lib_dst.failures import FailureSignature, capture_failure
 from lib_dst.faults import decisions_from_trace, with_faults
 from lib_dst.oracle import canonical, evaluate
 from lib_dst.schemas import TraceOperation, TraceTranscript
+from lib_dst.scale_generator import regenerate_scaled_trace
 from lib_dst.validation import TraceValidationError, validate_trace
 
 
@@ -71,6 +72,13 @@ def shrink_failure(
     changed = True
     while changed:
         changed = False
+        for candidate in _scale_candidates(current):
+            if retain(candidate):
+                current = candidate
+                changed = True
+                break
+        if changed:
+            continue
         for candidate in _operation_candidates(current):
             if retain(candidate):
                 current = candidate
@@ -190,6 +198,8 @@ def _rewrite_expression(
 
 
 def _ast_candidates(trace: TraceTranscript) -> Iterable[TraceTranscript]:
+    if not isinstance(trace.metadata.get("ast"), dict):
+        return
     expression = from_dict(trace.metadata["ast"])
     for simpler in _direct_simplifications(expression):
         if simpler.output_type is ValueType.NUMBER:
@@ -200,6 +210,8 @@ def _ast_candidates(trace: TraceTranscript) -> Iterable[TraceTranscript]:
 
 
 def _value_candidates(trace: TraceTranscript) -> Iterable[TraceTranscript]:
+    if not isinstance(trace.metadata.get("ast"), dict):
+        return
     expression = from_dict(trace.metadata["ast"])
     for index, operation in enumerate(trace.operations):
         if operation.kind != "set_cell_hardvalue":
@@ -219,3 +231,13 @@ def _fault_candidates(trace: TraceTranscript) -> Iterable[TraceTranscript]:
     decisions = list(decisions_from_trace(trace))
     for index in range(len(decisions)):
         yield with_faults(trace, decisions[:index] + decisions[index + 1 :])
+
+
+def _scale_candidates(trace: TraceTranscript) -> Iterable[TraceTranscript]:
+    if not isinstance(trace.metadata.get("workload"), dict):
+        return
+    for divisor in (2, 4, 8):
+        try:
+            yield regenerate_scaled_trace(trace, divisor)
+        except (KeyError, TypeError, ValueError):
+            continue

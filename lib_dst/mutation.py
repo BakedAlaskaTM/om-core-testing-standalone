@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import copy
+import itertools
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
-from lib_dst.ast import from_dict, render
+from lib_dst.ast import Binary, from_dict, render, to_dict
 from lib_dst.faults import FaultDecision
 from lib_dst.oracle import canonical, evaluate
-from lib_dst.schemas import TraceOperation, TraceTranscript
+from lib_dst.scale_generator import refresh_workload_metadata
+from lib_dst.schemas import ObservationCell, TraceOperation, TraceTranscript
 from lib_dst.scheduling import QUERY_TIMEOUT_NS, SchedulerScenario
 from lib_dst.seeding import SeedStreams
 from lib_dst.validation import validate_trace
@@ -25,6 +27,11 @@ _KINDS = {
     "recalculation",
     "scheduler_delay",
     "fault",
+    "scale_cardinality",
+    "scale_density",
+    "scale_rule",
+    "scale_graph",
+    "operation_burst",
 }
 
 
@@ -91,6 +98,16 @@ def mutation_decisions_from_trace(
 
 
 def available_mutation_kinds(trace: TraceTranscript) -> tuple[str, ...]:
+    if isinstance(trace.metadata.get("workload"), dict):
+        kinds = ["scale_cardinality", "operation_burst"]
+        unused = _scale_unused_addresses(trace)
+        if unused:
+            kinds.extend(("scale_density", "scale_rule"))
+        if any(len(dimensions) == 1 for _, dimensions, _ in unused):
+            kinds.append("scale_graph")
+        if trace.metadata.get("faults"):
+            kinds.append("fault")
+        return tuple(sorted(kinds))
     ast_value = trace.metadata.get("ast", {})
     nodes = tuple(_walk_ast(ast_value)) if isinstance(ast_value, dict) else ()
     kinds: list[str] = []
@@ -153,8 +170,19 @@ def apply_mutation_decision(
     operations = list(trace.operations)
     metadata = copy.deepcopy(trace.metadata)
     ast_changed = False
+    scale_candidate: TraceTranscript | None = None
 
-    if decision.kind == "hardvalue":
+    if decision.kind in {
+        "scale_cardinality",
+        "scale_density",
+        "scale_rule",
+        "scale_graph",
+        "operation_burst",
+    }:
+        scale_candidate = _apply_scale_mutation(trace, decision)
+        operations = list(scale_candidate.operations)
+        metadata = copy.deepcopy(scale_candidate.metadata)
+    elif decision.kind == "hardvalue":
         step = int(decision.target["step"])
         operation = operations[step]
         args = dict(operation.args)
@@ -218,7 +246,9 @@ def apply_mutation_decision(
     else:  # pragma: no cover - guarded by MutationDecision
         raise ValueError(f"Unsupported mutation kind: {decision.kind}")
 
-    candidate = replace(trace, operations=tuple(operations), metadata=metadata)
+    candidate = scale_candidate or replace(
+        trace, operations=tuple(operations), metadata=metadata
+    )
     if decision.kind == "hardvalue" or ast_changed:
         candidate = _refresh_oracle(candidate)
 
@@ -241,7 +271,17 @@ def _draw_decision(trace, kind, mutation_index, seed, rng) -> MutationDecision:
     target: dict[str, Any]
     before: Any
     after: Any
-    if kind == "hardvalue":
+    if kind in {
+        "scale_cardinality",
+        "scale_density",
+        "scale_rule",
+        "scale_graph",
+        "operation_burst",
+    }:
+        target, before, after = _draw_scale_decision(
+            trace, kind, mutation_index, rng
+        )
+    elif kind == "hardvalue":
         candidates = [operation for operation in trace.operations if operation.kind == "set_cell_hardvalue"]
         operation = rng.choice(candidates)
         target = {"step": operation.step}
@@ -382,3 +422,247 @@ def _reference_node(trace: TraceTranscript, handle: str) -> dict[str, Any]:
         "dimension": dimension["name"],
         "item": item["name"],
     }
+
+
+def _draw_scale_decision(trace, kind, mutation_index, rng):
+    symbols = trace.metadata["symbols"]
+    if kind == "scale_cardinality":
+        dimensions = sorted(
+            handle
+            for handle, value in symbols.items()
+            if value.get("kind") == "dimension"
+        )
+        dimension = rng.choice(dimensions)
+        existing = sum(
+            value.get("kind") == "item" and value.get("owner") == dimension
+            for value in symbols.values()
+        )
+        target = {"dimension": dimension}
+        before = existing
+        after = {
+            "handle": f"item:mutation/{mutation_index}/{existing}",
+            "name": f"MutItem{mutation_index:04d}_{existing:04d}",
+        }
+        return target, before, after
+    if kind == "operation_burst":
+        count = rng.randint(1, 4)
+        return {"insert": "tail"}, 0, count
+
+    candidates = _scale_unused_addresses(trace)
+    if kind == "scale_graph":
+        candidates = [candidate for candidate in candidates if len(candidate[1]) == 1]
+    cube, dimensions, address = rng.choice(candidates)
+    target = {"cube": cube, "address": list(address)}
+    before = None
+    if kind == "scale_density":
+        after = {"value": rng.randint(-20, 20)}
+    elif kind == "scale_rule":
+        value = rng.randint(-20, 20)
+        after = {
+            "expression": str(value),
+            "ast": {"type": "number", "value": value},
+            "expected": {"number": float(value)},
+        }
+    else:
+        cube_name = symbols[cube]["name"]
+        probe = next(
+            probe
+            for probe in _all_oracle_probes(trace)
+            if probe["target"]["cube"] == cube_name
+            and "number" in probe["expected"]
+        )
+        source_name = probe["target"]["address"][1]
+        dimension_handle = dimensions[0]
+        source_handle = next(
+            handle
+            for handle, value in symbols.items()
+            if value.get("kind") == "item"
+            and value.get("owner") == dimension_handle
+            and value.get("name") == source_name
+        )
+        expression = Binary(
+            "+",
+            from_dict(
+                {
+                    "type": "reference",
+                    "handle": source_handle,
+                    "cube": cube_name,
+                    "dimension": symbols[dimension_handle]["name"],
+                    "item": source_name,
+                }
+            ),
+            from_dict({"type": "number", "value": 1}),
+        )
+        after = {
+            "expression": render(expression),
+            "ast": to_dict(expression),
+            "expected": {"number": float(probe["expected"]["number"]) + 1.0},
+        }
+    return target, before, after
+
+
+def _apply_scale_mutation(
+    trace: TraceTranscript, decision: MutationDecision
+) -> TraceTranscript:
+    operations = list(trace.operations)
+    metadata = copy.deepcopy(trace.metadata)
+    observe = trace.observe
+    if decision.kind == "scale_cardinality":
+        dimension = str(decision.target["dimension"])
+        existing = sum(
+            value.get("kind") == "item" and value.get("owner") == dimension
+            for value in metadata["symbols"].values()
+        )
+        if existing != decision.before:
+            raise ValueError("Scale-cardinality mutation precondition changed")
+        handle = str(decision.after["handle"])
+        name = str(decision.after["name"])
+        if handle in metadata["symbols"]:
+            raise ValueError("Scale-cardinality handle already exists")
+        metadata["symbols"][handle] = {
+            "kind": "item",
+            "name": name,
+            "owner": dimension,
+        }
+        insertion = max(
+            index
+            for index, operation in enumerate(operations)
+            if operation.kind == "create_dimension_item"
+            and operation.args["dimension"] == dimension
+        ) + 1
+        operations.insert(
+            insertion,
+            TraceOperation(-1, "create_dimension_item", handle, {"dimension": dimension, "name": name}),
+        )
+    elif decision.kind == "operation_burst":
+        for _ in range(int(decision.after)):
+            operations.append(TraceOperation(-1, "run_recalculation", "runtime", {"scope": "all"}))
+    else:
+        cube = str(decision.target["cube"])
+        address = tuple(str(handle) for handle in decision.target["address"])
+        if not any(
+            candidate_cube == cube and candidate_address == address
+            for candidate_cube, _, candidate_address in _scale_unused_addresses(trace)
+        ):
+            raise ValueError("Scale mutation target is no longer unused")
+        insertion = next(
+            (
+                index
+                for index, operation in enumerate(operations)
+                if operation.kind == "run_recalculation"
+            ),
+            len(operations),
+        )
+        if decision.kind == "scale_density":
+            operations.insert(
+                insertion,
+                TraceOperation(
+                    -1,
+                    "set_cell_hardvalue",
+                    cube,
+                    {"address": list(address), "value": decision.after["value"]},
+                ),
+            )
+        else:
+            symbols = metadata["symbols"]
+            targets = [
+                [symbols[symbols[handle]["owner"]]["name"], symbols[handle]["name"]]
+                for handle in address
+            ]
+            operations.insert(
+                insertion,
+                TraceOperation(
+                    -1,
+                    "set_rule",
+                    cube,
+                    {
+                        "targets": targets,
+                        "expression": decision.after["expression"],
+                        "is_anchored": True,
+                    },
+                ),
+            )
+            cube_name = symbols[cube]["name"]
+            target = {
+                "cube": cube_name,
+                "address": ["@.value", *(symbols[handle]["name"] for handle in address)],
+            }
+            metadata["oracle"].setdefault("probes", []).append(
+                {"target": target, "expected": copy.deepcopy(decision.after["expected"])}
+            )
+            metadata.setdefault("rule_asts", []).append(
+                {
+                    "step": -1,
+                    "cube": cube_name,
+                    "target": target,
+                    "expression": decision.after["expression"],
+                    "ast": copy.deepcopy(decision.after["ast"]),
+                    "expected": copy.deepcopy(decision.after["expected"]),
+                }
+            )
+        cube_name = metadata["symbols"][cube]["name"]
+        logical = ObservationCell(
+            cube_name,
+            ("@.value", *(metadata["symbols"][handle]["name"] for handle in address)),
+        )
+        observe = replace(
+            observe,
+            cells=tuple(sorted({*observe.cells, logical}, key=lambda cell: (cell.cube, cell.address))),
+        )
+
+    operations = [replace(operation, step=index) for index, operation in enumerate(operations)]
+    if metadata.get("rule_asts") is not None:
+        rule_entries = list(metadata["rule_asts"])
+        rule_operations = [operation for operation in operations if operation.kind == "set_rule"]
+        if len(rule_entries) != len(rule_operations):
+            raise ValueError("Scale mutation rule metadata is incomplete")
+        for entry, operation in zip(rule_entries, rule_operations):
+            entry["step"] = operation.step
+    candidate = replace(trace, operations=tuple(operations), observe=observe, metadata=metadata)
+    return refresh_workload_metadata(candidate)
+
+
+def _scale_unused_addresses(
+    trace: TraceTranscript,
+) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    symbols = trace.metadata.get("symbols", {})
+    items_by_dimension: dict[str, list[str]] = {}
+    for handle, value in symbols.items():
+        if value.get("kind") == "item":
+            items_by_dimension.setdefault(str(value["owner"]), []).append(handle)
+    for values in items_by_dimension.values():
+        values.sort()
+    used: dict[str, set[tuple[str, ...]]] = {}
+    name_lookup = {
+        (str(value.get("owner")), str(value.get("name"))): handle
+        for handle, value in symbols.items()
+        if value.get("kind") == "item"
+    }
+    cube_dimensions: dict[str, tuple[str, ...]] = {}
+    for operation in trace.operations:
+        if operation.kind == "create_cube":
+            cube_dimensions[operation.target] = tuple(operation.args["dimensions"])
+        elif operation.kind == "set_cell_hardvalue":
+            used.setdefault(operation.target, set()).add(tuple(operation.args["address"]))
+        elif operation.kind == "set_rule":
+            dimensions = cube_dimensions[operation.target]
+            address = tuple(
+                name_lookup[(dimension, target[1])]
+                for dimension, target in zip(dimensions, operation.args["targets"])
+            )
+            used.setdefault(operation.target, set()).add(address)
+    result: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
+    for cube, dimensions in sorted(cube_dimensions.items()):
+        for address in itertools.product(*(items_by_dimension[dimension] for dimension in dimensions)):
+            if tuple(address) not in used.get(cube, set()):
+                result.append((cube, dimensions, tuple(address)))
+                break
+    return result
+
+
+def _all_oracle_probes(trace: TraceTranscript) -> list[dict[str, Any]]:
+    oracle = trace.metadata["oracle"]
+    return [
+        {"target": oracle["target"], "expected": oracle["expected"]},
+        *list(oracle.get("probes", ())),
+    ]

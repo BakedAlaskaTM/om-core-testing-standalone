@@ -17,6 +17,7 @@ from lib_dst.generator import generate_trace
 from lib_dst.schemas import TraceTranscript
 from lib_dst.scheduling import execute_scheduled_trace
 from lib_dst.script_export import export_openm_script, write_openm_script
+from lib_dst.stress import evaluate_stress_trace
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,7 @@ def main() -> None:
     parser.add_argument("--trace-stdin", action="store_true")
     parser.add_argument("--scheduled-trace-stdin", action="store_true")
     parser.add_argument("--candidate-stdin", action="store_true")
+    parser.add_argument("--stress-point-stdin", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--export-script-stdin",
         nargs="?",
@@ -88,6 +90,10 @@ def main() -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             evidence = execute_candidate(trace)
         print(evidence.to_json())
+        return
+    if args.stress_point_stdin:
+        trace = TraceTranscript.from_json(sys.stdin.read())
+        print(json.dumps(evaluate_stress_trace(trace), sort_keys=True, separators=(",", ":")))
         return
     if args.trace_stdin:
         trace = TraceTranscript.from_json(sys.stdin.read())
