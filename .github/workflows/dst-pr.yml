@@ -1,0 +1,61 @@
+name: DST regression corpus
+
+# Runs the small fixed deterministic-simulation corpus on every pull request.
+# Budget: the 25-entry corpus took ~27 s locally (Windows, Python 3.12); the job
+# timeout leaves room for dependency installation on a cold cache.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dst-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      OPENBLAS_NUM_THREADS: "1"
+    defaults:
+      run:
+        # An explicit bash shell runs with -o pipefail, so `| tee` cannot mask the
+        # om-dst exit code (the implicit default shell is plain `bash -e`).
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Run fixed regression corpus
+        run: >
+          uv run --frozen python -m lib_dst run
+          --corpus tests/dst_corpus
+          --out dst-artifacts
+          --timeout 300
+          --memory-mb 8192
+          | tee dst-summary.json
+
+      - name: Upload DST artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dst-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dst-artifacts/
+            dst-summary.json
+          retention-days: 14
+          if-no-files-found: warn

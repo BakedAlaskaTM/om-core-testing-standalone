@@ -55,6 +55,7 @@ def capture_failure(
     *,
     workspace_adapter=None,
     snapshot_adapter=None,
+    evidence: dict[str, Any] | None = None,
 ) -> FailureOutcome:
     try:
         validate_trace(trace)
@@ -69,6 +70,7 @@ def capture_failure(
             trace,
             workspace_adapter=workspace_adapter,
             snapshot_adapter=snapshot_adapter,
+            evidence=evidence,
         )
     except PersistenceFaultError as exc:
         return FailureOutcome(

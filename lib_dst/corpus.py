@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from lib_dst.artifacts import atomic_write_text
 from lib_dst.schemas import TraceTranscript
 from lib_dst.seeding import SeedStreams
 
@@ -266,19 +266,7 @@ class CorpusStore:
 
     @staticmethod
     def _atomic_write(path: Path, value: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(value)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        atomic_write_text(path, value)
 
 
 def semantic_features(trace: TraceTranscript) -> tuple[str, ...]:

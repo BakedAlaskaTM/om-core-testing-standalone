@@ -1,0 +1,271 @@
+{
+  "description": "Fixed DST pull-request regression corpus; see scripts/dst_build_corpus.py",
+  "entries": [
+    {
+      "description": "legacy numeric trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "legacy-seed-0",
+      "source": "generate_trace(0)",
+      "trace": "traces/001231720eefe5f7306b0c6fd47e3b854e9dc0653aa66eb356d989fcaf73e3f9.json",
+      "trace_sha256": "001231720eefe5f7306b0c6fd47e3b854e9dc0653aa66eb356d989fcaf73e3f9"
+    },
+    {
+      "description": "legacy numeric trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "legacy-seed-1",
+      "source": "generate_trace(1)",
+      "trace": "traces/91c44a80838219bb04b638f59960fa1dbe57883a8532abf85856aeb84b6f00d7.json",
+      "trace_sha256": "91c44a80838219bb04b638f59960fa1dbe57883a8532abf85856aeb84b6f00d7"
+    },
+    {
+      "description": "legacy numeric trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "legacy-seed-2",
+      "source": "generate_trace(2)",
+      "trace": "traces/13f44f530c7bc52bc4ba00a7928a14db40b21997d714527f5fd4593a2ecb0011.json",
+      "trace_sha256": "13f44f530c7bc52bc4ba00a7928a14db40b21997d714527f5fd4593a2ecb0011"
+    },
+    {
+      "description": "deliberate #DIV/0! error contract",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "legacy-div0-seed-5",
+      "source": "generate_trace(5)",
+      "trace": "traces/1aa8862f33e6799b6c28125905b96744f13ae2c973062768e789df5ef9bd429b.json",
+      "trace_sha256": "1aa8862f33e6799b6c28125905b96744f13ae2c973062768e789df5ef9bd429b"
+    },
+    {
+      "description": "small workload profile",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "profile-small",
+      "source": "generate_profile_trace(4500, 'small')",
+      "trace": "traces/6d96479d50772793994cd275504f25382fdd45ac0ced00c0dcd6ab388e0fb15d.json",
+      "trace_sha256": "6d96479d50772793994cd275504f25382fdd45ac0ced00c0dcd6ab388e0fb15d"
+    },
+    {
+      "description": "medium workload profile",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "profile-medium",
+      "source": "generate_profile_trace(4500, 'medium')",
+      "trace": "traces/1718993d628900d7149e0004ee5aaac60b0d10394a27fbd29791bfed32d970e9.json",
+      "trace_sha256": "1718993d628900d7149e0004ee5aaac60b0d10394a27fbd29791bfed32d970e9"
+    },
+    {
+      "description": "large workload profile",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "profile-large",
+      "source": "generate_profile_trace(4500, 'large')",
+      "trace": "traces/563fdf0235f677783787fd36fa7039e6ddee3900531ddca8925f60a9e1b241db.json",
+      "trace_sha256": "563fdf0235f677783787fd36fa7039e6ddee3900531ddca8925f60a9e1b241db"
+    },
+    {
+      "description": "dependency_deep workload profile",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "profile-dependency_deep",
+      "source": "generate_profile_trace(4500, 'dependency_deep')",
+      "trace": "traces/2adaa540ffe143dece87c1b153948df49115e21bb55187f6b5db2b119ff0ea10.json",
+      "trace_sha256": "2adaa540ffe143dece87c1b153948df49115e21bb55187f6b5db2b119ff0ea10"
+    },
+    {
+      "description": "persistence_heavy workload profile",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "profile-persistence_heavy",
+      "source": "generate_profile_trace(4500, 'persistence_heavy')",
+      "trace": "traces/93c6e1dcd42a89cdde179e9a2c788044165618e99c21960ca2a6f63f42d8657c.json",
+      "trace_sha256": "93c6e1dcd42a89cdde179e9a2c788044165618e99c21960ca2a6f63f42d8657c"
+    },
+    {
+      "description": "event_heavy workload profile",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "profile-event_heavy",
+      "source": "generate_profile_trace(4500, 'event_heavy')",
+      "trace": "traces/d0aca2d42c330e1e227781f6d524b246bf4fb48733dab34f954b8e480139e256.json",
+      "trace_sha256": "d0aca2d42c330e1e227781f6d524b246bf4fb48733dab34f954b8e480139e256"
+    },
+    {
+      "description": "virtual scheduler delay contract",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "scheduler-delay",
+      "source": "with_scheduler(generate_trace(7), generate_scheduler_scenario(7, 'delay'))",
+      "trace": "traces/fa8f34c7704015fb251726968b9849e521d4501c9d9499fbb5411c970dd1949e.json",
+      "trace_sha256": "fa8f34c7704015fb251726968b9849e521d4501c9d9499fbb5411c970dd1949e"
+    },
+    {
+      "description": "virtual scheduler reorder contract",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "scheduler-reorder",
+      "source": "with_scheduler(generate_trace(7), generate_scheduler_scenario(7, 'reorder'))",
+      "trace": "traces/d410db7f41e67d4e13689e0f9daa7f789b33a13d078a6bef5b9a09187a44bc8a.json",
+      "trace_sha256": "d410db7f41e67d4e13689e0f9daa7f789b33a13d078a6bef5b9a09187a44bc8a"
+    },
+    {
+      "description": "virtual scheduler timeout contract",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "scheduler-timeout",
+      "source": "with_scheduler(generate_trace(7), generate_scheduler_scenario(7, 'timeout'))",
+      "trace": "traces/020b0024c2ae96293bc139222132a68e3c80a00572a1f442fa85feb30e175e46.json",
+      "trace_sha256": "020b0024c2ae96293bc139222132a68e3c80a00572a1f442fa85feb30e175e46"
+    },
+    {
+      "description": "declared persistence fault must surface its signature",
+      "expect": {
+        "code": "persistence.save.injected",
+        "kind": "controlled_engine_error",
+        "origin": "engine",
+        "verdict": "failed"
+      },
+      "id": "fault-save-raise",
+      "source": "with_faults(generate_trace(3), [FaultDecision('persistence', 'save', 1, 'raise')])",
+      "trace": "traces/40b2ebd1b554d4f927b2a64717fcbf4020f4c97873745304c485f59061982b46.json",
+      "trace_sha256": "40b2ebd1b554d4f927b2a64717fcbf4020f4c97873745304c485f59061982b46"
+    },
+    {
+      "description": "declared persistence fault must surface its signature",
+      "expect": {
+        "code": "persistence.load.injected",
+        "kind": "controlled_engine_error",
+        "origin": "engine",
+        "verdict": "failed"
+      },
+      "id": "fault-load-raise",
+      "source": "with_faults(generate_trace(3), [FaultDecision('persistence', 'load', 1, 'raise')])",
+      "trace": "traces/1c41ccbbd4123b651537428b13607a7027462ff4195829f9f4455b2c510e74e6.json",
+      "trace_sha256": "1c41ccbbd4123b651537428b13607a7027462ff4195829f9f4455b2c510e74e6"
+    },
+    {
+      "description": "declared persistence fault must surface its signature",
+      "expect": {
+        "code": "persistence.load.malformed-json",
+        "kind": "controlled_engine_error",
+        "origin": "engine",
+        "verdict": "failed"
+      },
+      "id": "fault-load-malformed-json",
+      "source": "with_faults(generate_trace(3), [FaultDecision('persistence', 'load', 1, 'malformed_json')])",
+      "trace": "traces/e060c3087f49a5428dfb1393a2cb1a861254fa910016d5f07b60ac9e71a155ef.json",
+      "trace_sha256": "e060c3087f49a5428dfb1393a2cb1a861254fa910016d5f07b60ac9e71a155ef"
+    },
+    {
+      "description": "small cross-cube dependency chain",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "stress-dependency-depth-4",
+      "source": "generate_stress_axis_trace(4500, 'dependency_depth', 4)",
+      "trace": "traces/5778b11be995f92607b459fd0679b79024acf4363070ce3ae4437a6abb8c88bf.json",
+      "trace_sha256": "5778b11be995f92607b459fd0679b79024acf4363070ce3ae4437a6abb8c88bf"
+    },
+    {
+      "description": "KNOWN DEFECT: Engine facade lacks udf_registry (plan.md Phase 4.5)",
+      "expect": {
+        "code": "RuntimeError",
+        "kind": "controlled_engine_error",
+        "origin": "engine",
+        "verdict": "failed"
+      },
+      "id": "known-defect-udf-create",
+      "source": "generate_stress_axis_trace(4500, 'udf_depth', 1)",
+      "trace": "traces/694ca49c1faa42a59342ef90e3237c1867b1412fbc0c7d11a4a04d31bed6ea39.json",
+      "trace_sha256": "694ca49c1faa42a59342ef90e3237c1867b1412fbc0c7d11a4a04d31bed6ea39"
+    },
+    {
+      "description": "KNOWN DEFECT: semantic selectors stored as item-ID keys (plan.md Phase 4.5)",
+      "expect": {
+        "code": "invalid-item-key",
+        "kind": "controlled_engine_error",
+        "origin": "engine",
+        "verdict": "failed"
+      },
+      "id": "known-defect-format-address",
+      "source": "generate_stress_axis_trace(4500, 'format_volume', 2)",
+      "trace": "traces/5b8f5265979d2b8726491efc8c67a0f1cd95c331d0c467aeb103416c780c528d.json",
+      "trace_sha256": "5b8f5265979d2b8726491efc8c67a0f1cd95c331d0c467aeb103416c780c528d"
+    },
+    {
+      "description": "Phase 4 mutation-evolved trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "evolved-ast-literal",
+      "source": ".om/dst-corpus-run-001/traces/024c560c744c928980c404310d9fbab130bc6987e96412b8999dca23cafaaff7.json",
+      "trace": "traces/024c560c744c928980c404310d9fbab130bc6987e96412b8999dca23cafaaff7.json",
+      "trace_sha256": "024c560c744c928980c404310d9fbab130bc6987e96412b8999dca23cafaaff7"
+    },
+    {
+      "description": "Phase 4 mutation-evolved trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "evolved-ast-operator",
+      "source": ".om/dst-corpus-run-001/traces/0f544e3407ca68ffed3ed2d8dba1722beabf220e1fa6ead79f2177bbddd514b5.json",
+      "trace": "traces/0f544e3407ca68ffed3ed2d8dba1722beabf220e1fa6ead79f2177bbddd514b5.json",
+      "trace_sha256": "0f544e3407ca68ffed3ed2d8dba1722beabf220e1fa6ead79f2177bbddd514b5"
+    },
+    {
+      "description": "Phase 4 mutation-evolved trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "evolved-recalculation",
+      "source": ".om/dst-corpus-run-001/traces/26c0f41dfee232e798017eb10426f089b38c7c20addd8e25d10d3102d62da961.json",
+      "trace": "traces/26c0f41dfee232e798017eb10426f089b38c7c20addd8e25d10d3102d62da961.json",
+      "trace_sha256": "26c0f41dfee232e798017eb10426f089b38c7c20addd8e25d10d3102d62da961"
+    },
+    {
+      "description": "Phase 4 mutation-evolved trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "evolved-ast-reference",
+      "source": ".om/dst-corpus-run-001/traces/9def6bf0fd3bb657fff627848273cceda29e0d8425ef20c8affac4d218a25b14.json",
+      "trace": "traces/9def6bf0fd3bb657fff627848273cceda29e0d8425ef20c8affac4d218a25b14.json",
+      "trace_sha256": "9def6bf0fd3bb657fff627848273cceda29e0d8425ef20c8affac4d218a25b14"
+    },
+    {
+      "description": "Phase 4 mutation-evolved trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "evolved-hardvalue-round",
+      "source": ".om/dst-corpus-run-001/traces/4b6900b51a9a462ab2c53f9bbb4a32c3956f97306612d52f89a4a2b52507b7f2.json",
+      "trace": "traces/4b6900b51a9a462ab2c53f9bbb4a32c3956f97306612d52f89a4a2b52507b7f2.json",
+      "trace_sha256": "4b6900b51a9a462ab2c53f9bbb4a32c3956f97306612d52f89a4a2b52507b7f2"
+    },
+    {
+      "description": "Phase 4 mutation-evolved trace",
+      "expect": {
+        "verdict": "passed"
+      },
+      "id": "evolved-division-error",
+      "source": ".om/dst-corpus-run-001/traces/528a1b5c78db30f4613b7b3cb7e7011b85c1a61e7a84a150e93005a36373bab3.json",
+      "trace": "traces/528a1b5c78db30f4613b7b3cb7e7011b85c1a61e7a84a150e93005a36373bab3.json",
+      "trace_sha256": "528a1b5c78db30f4613b7b3cb7e7011b85c1a61e7a84a150e93005a36373bab3"
+    }
+  ],
+  "schema_version": 1
+}

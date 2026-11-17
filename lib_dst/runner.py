@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from typing import Any
 
+from lib_dst.provenance import repository_root, worker_environment
 from lib_dst.schemas import TraceTranscript
 
 
 def run_seed_range(
     start_seed: int, count: int, *, python_hash_seed: str = "1"
 ) -> dict[str, Any]:
-    environment = dict(os.environ)
-    environment["PYTHONHASHSEED"] = python_hash_seed
-    environment["TZ"] = "UTC"
+    environment = worker_environment(python_hash_seed=python_hash_seed)
     completed = subprocess.run(
         [
             sys.executable,
@@ -31,6 +29,7 @@ def run_seed_range(
         capture_output=True,
         text=True,
         env=environment,
+        cwd=str(repository_root()),
     )
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
@@ -48,9 +47,7 @@ def compare_seed_range(
 def run_failure_in_worker(
     trace: TraceTranscript, *, python_hash_seed: str = "1"
 ) -> dict[str, Any]:
-    environment = dict(os.environ)
-    environment["PYTHONHASHSEED"] = python_hash_seed
-    environment["TZ"] = "UTC"
+    environment = worker_environment(python_hash_seed=python_hash_seed)
     completed = subprocess.run(
         [sys.executable, "-m", "lib_dst.worker", "--trace-stdin"],
         check=True,
@@ -58,6 +55,7 @@ def run_failure_in_worker(
         text=True,
         input=trace.to_json(),
         env=environment,
+        cwd=str(repository_root()),
     )
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
@@ -65,9 +63,7 @@ def run_failure_in_worker(
 def run_scheduled_in_worker(
     trace: TraceTranscript, *, python_hash_seed: str = "1"
 ) -> dict[str, Any]:
-    environment = dict(os.environ)
-    environment["PYTHONHASHSEED"] = python_hash_seed
-    environment["TZ"] = "UTC"
+    environment = worker_environment(python_hash_seed=python_hash_seed)
     completed = subprocess.run(
         [sys.executable, "-m", "lib_dst.worker", "--scheduled-trace-stdin"],
         check=True,
@@ -75,6 +71,7 @@ def run_scheduled_in_worker(
         text=True,
         input=trace.to_json(),
         env=environment,
+        cwd=str(repository_root()),
     )
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
@@ -83,9 +80,7 @@ def run_candidate_in_worker(
     trace: TraceTranscript, *, python_hash_seed: str = "1"
 ) -> dict[str, Any]:
     """Collect candidate coverage/outcome in an isolated worker process."""
-    environment = dict(os.environ)
-    environment["PYTHONHASHSEED"] = python_hash_seed
-    environment["TZ"] = "UTC"
+    environment = worker_environment(python_hash_seed=python_hash_seed)
     completed = subprocess.run(
         [sys.executable, "-m", "lib_dst.worker", "--candidate-stdin"],
         check=True,
@@ -93,6 +88,7 @@ def run_candidate_in_worker(
         text=True,
         input=trace.to_json(),
         env=environment,
+        cwd=str(repository_root()),
     )
     return json.loads(completed.stdout.strip().splitlines()[-1])
 

@@ -1432,6 +1432,286 @@ Exit: CI runtime and seed throughput are measured empirically. Seed-count target
 one million runs are adopted only when observed throughput and infrastructure cost make
 them credible.
 
+#### Phase 5 outcome (implemented 2026-11-17)
+
+- Added the public `om-dst` CLI in `lib_dst/cli.py`, run as `python -m lib_dst`
+  (`lib_dst/__main__.py`) or through the root wrappers `om-dst` (POSIX sh) and
+  `om-dst.ps1`. `[tool.uv] package = false` is unchanged. Subcommands:
+  - `run --corpus DIR | --seeds START:COUNT [--profile P] | --stress-default |
+    --stress-axis AXIS (--discover-limit [--ceiling N] | --value N)`;
+  - `replay TRACE [--strict-env]`;
+  - `shrink TRACE`.
+  Common options: `--out`, `--overwrite`, `--resume` (run only), `--timeout`,
+  `--memory-mb`, `--no-shrink`.
+- Exit-code contract: 0 passed/matched expectations; 1 failure or `xpass`; 2 usage or
+  invalid input (argparse errors, malformed trace, corrupt corpus, run-directory
+  collision, shrinking a passing trace); 3 inconclusive; 4 `--strict-env` replay
+  rejected before execution. stdout carries exactly one canonical JSON summary line;
+  progress is on stderr.
+- Added `lib_dst/artifacts.py`. A run directory is `<out>/<mode>-<sha256(command)[:16]>/`
+  containing `manifest.json` (status `incomplete` until finalized, command,
+  provenance), `summary.json` (deterministic identity plus `identity_sha256`),
+  `measurements.json` (volatile only), `checkpoints/`, `failures/<trace-sha>/` and
+  `stress/<axis>.json`. Every failure retains the original canonical `trace.json`
+  (file SHA-256 equals the trace hash) plus `outcome.json`, `environment.json`,
+  `diff.json` when an invariant disagreed, and `minimized.json`/`shrink.json` when a
+  normalized signature exists. Writes use the atomic writer now shared with
+  `CorpusStore`. A complete run is replaced only with `--overwrite`; an incomplete one
+  continues only with `--resume` and the identical command; a directory without an
+  `om-dst` manifest is never used or deleted.
+- Added `lib_dst/provenance.py` (git revision with `-dirty` flag, tracked dependency
+  versions, pinned worker environment, compatibility comparison) and
+  `lib_dst/process.py` (`run_worker`, which never raises for an abnormal child and
+  records which limits were enforced). Workers now receive explicit `cwd` and
+  `PYTHONPATH`, so the CLI and the existing `lib_dst.runner` helpers work from any
+  working directory.
+- Added `lib_dst/evaluation.py` and hidden worker switches `--evaluate-stdin`,
+  `--seed-outcomes`, and `--shrink-stdin`. Seed batches emit one JSON line per seed and
+  flush after each, so an abnormal batch exit loses no completed seed; every unreported
+  seed is re-run alone and attributed individually. Shrinking runs in a worker, and each
+  minimized trace is replayed in a further clean worker before it is reported as
+  reproduced. `execute_convergence`/`capture_failure` accept an optional `evidence`
+  dict exposing the observation behind each invariant check; `lib_dst/diff.py` turns
+  those into deterministic canonical diffs. Report schemas are unchanged.
+- Added the fixed PR regression corpus `tests/dst_corpus/` (25 entries: four legacy
+  seeds including `#DIV/0!`, all six profiles, three scheduler modes, three declared
+  persistence faults, one dependency stress point, both known command-boundary defects,
+  and six Phase 4 mutation-evolved traces copied from `.om/dst-corpus-run-001`), its
+  reproducible builder `scripts/dst_build_corpus.py` (`--check` verifies), and
+  `tests/dst_corpus/known_failures.json` for stress modes.
+- Added `.github/workflows/dst-pr.yml` (corpus on every pull request, Ubuntu, artifacts
+  retained 14 days) and `.github/workflows/dst-scheduled.yml` (nightly Ubuntu and
+  Windows: rotating legacy/profile seed windows plus `stress_default`, artifacts
+  retained 30 days, manual dispatch with explicit seed starts).
+
+Implementation details:
+
+- File inventory. New: `lib_dst/cli.py`, `lib_dst/__main__.py`,
+  `lib_dst/artifacts.py`, `lib_dst/provenance.py`, `lib_dst/process.py`,
+  `lib_dst/evaluation.py`, `lib_dst/diff.py`, `om-dst`, `om-dst.ps1`,
+  `scripts/dst_build_corpus.py`, `tests/dst_corpus/` (`manifest.json`,
+  `known_failures.json`, `traces/`), `tests/test_dst_phase5.py`, and the two workflows.
+  Modified: `lib_dst/stress.py` (outcome/exit classification, identity, worker launch),
+  `lib_dst/invariants.py` and `lib_dst/failures.py` (optional `evidence`),
+  `lib_dst/worker.py` (hidden Phase 5 switches), `lib_dst/runner.py` (worker `cwd` and
+  `PYTHONPATH`), `lib_dst/corpus.py` (shared atomic writer), `README.md`, `.gitignore`.
+- Run identity. `run_id = <mode>-<first 16 hex of sha256(canonical command)>`. The
+  command dict contains only result-relevant inputs: mode parameters, worker limits,
+  and the shrink flag. `--out`, `--overwrite`, and `--resume` are excluded. Corpus runs
+  identify the corpus by its `[entry id, trace sha]` pairs and stress runs embed the
+  known-failures *content*, so run IDs do not depend on filesystem paths.
+- Result statuses. Every summary row has `key`, `trace_sha256`, `classification`,
+  `status`, and, where relevant, `expect` and `failure_artifact`. Statuses are `pass`,
+  `fail` (failed verdict without a matching expectation), `xfail` (matches its
+  expectation on `verdict`/`origin`/`kind`/`code`), `xpass` (expected failure now
+  passes), `inconclusive`, and `boundary` (discovery `safety_ceiling` or
+  `generation_rejected`). Exit precedence: any `fail`/`xpass` → 1, else any
+  `inconclusive` → 3, else 0. For `shrink`, `pass` means minimized and reproduced in a
+  clean worker.
+- Summary identity. `summary.json` contains tool, artifact schema version, mode,
+  command, ordered rows, status counts, exit code and mode extras (stress report path
+  and identity, and for discovery `last_observed_pass`, `first_observed_failure`,
+  `monotonic`). `identity_sha256` is the SHA-256 of that canonical JSON. Elapsed time,
+  per-unit timings and units/second go only in `measurements.json`. The OM Core
+  revision, dependency versions, coordinator environment, and Python executable go
+  only in `manifest.json` provenance.
+- Checkpoints and resume. A checkpoint is written only after a unit's failure
+  artifacts (and any shrink) are complete: per corpus entry (`corpus:<id>`), per seed
+  batch (`seeds-<start>-<count>`), per stress point (`stress:<axis>:<value>`). On resume,
+  checkpointed units are reported from disk and the rest re-executed. Limit discovery
+  re-runs its deterministic search with an executor that returns checkpointed points,
+  so the bracket is identical. A checkpoint that fails to parse is treated as absent
+  and recomputed.
+- Worker protocol (internal, hidden from `--help`). `--evaluate-stdin` takes one trace
+  and prints one JSON object: `trace_sha256`, `classification`,
+  `deterministic_evidence`, full `outcome`, the failing `scheduled` report, `diffs`,
+  `worker_environment`. `--seed-outcomes --start-seed S --count N [--profile P]`
+  prints one line per seed. Passing lines are compact; non-passing lines add outcome,
+  diffs, worker environment and the canonical `trace_json`. `--shrink-stdin` prints
+  `status` (`minimized` or `not-failing`), signature, candidate count, and
+  `minimized_json`. Existing switches are unchanged.
+- Seed-batch localization. A batch's timeout is `--timeout × batch size`. When a batch
+  ends abnormally, completed lines are kept and each unreported seed runs alone with the
+  per-trace timeout. A seed that still has no result is classified from its exit evidence.
+  The coordinator regenerates its trace under the pinned environment, so the published
+  `trace.json` hashes to the reported `trace_sha256`.
+- Evidence flow. `evaluate_trace` calls `capture_failure(trace, evidence=...)`.
+  On an oracle mismatch it diffs `oracle.expected` against `engine.actual`. On an
+  invariant mismatch it diffs the incremental observation against the failing check's
+  observation (cache first/second recalculation, snapshot round trip, fresh-engine
+  convergence). Diffs list `$.path` leaves in sorted order, compare types exactly (so
+  `True != 1`), and are truncated at 500 entries with the full count recorded.
+  `environment.json` holds the recorded and observed environments, field mismatches,
+  revision, and dependency versions.
+- Stress points still run through the Phase 4.5 `--stress-point-stdin` protocol, which
+  supplies tracemalloc and persistence-size measurements. Only failing points with
+  engine-attributed kinds (`correctness_mismatch`, `controlled_engine_error`) are
+  re-evaluated in an `--evaluate-stdin` worker for outcome and diff evidence. `xfail`
+  rows produce no failure artifacts and are not shrunk.
+- Shrinking requires a normalized failure signature. Crashes, timeouts, and
+  scheduler-only mismatches are published without `minimized.json`. `shrink.json`
+  records the signature, candidate count, minimized hash, and
+  `reproduced_in_clean_worker`; an abnormal shrink worker is recorded with its exit
+  evidence instead.
+- Replay compatibility compares `python`, `implementation`, `platform`,
+  `python_hash_seed`, `timezone`, `engine_mode`, and `recalculation`. The coordinator
+  predicts the worker descriptor (same interpreter, pinned seed and timezone), so
+  `--strict-env` rejects before any worker or run directory is created.
+- Corpus and known-failures schemas (version 1). `manifest.json` entries need a string
+  `id`, string `trace` path, `trace_sha256`, and an object `expect`; `source` and
+  `description` are documentation. `known_failures.json` maps
+  `stress_axes.<axis>` to an expectation object; `reason` is documentation only.
+- Tests in `tests/test_dst_phase5.py` (33):
+  - exit-status classification, including a real abnormal child exit;
+  - timeout and memory-limit evidence;
+  - revision excluded from identity;
+  - environment pinning and restoration;
+  - diff stability;
+  - observation evidence capture;
+  - foreign-cwd runner;
+  - run-directory collision, resume, overwrite, and foreign-directory protection;
+  - byte-exact failure traces and atomic writes;
+  - repeatable seed runs and interrupted-run resume;
+  - seed localization on timeout;
+  - replay failure artifacts and clean-worker shrink reproduction;
+  - strict-environment rejection;
+  - malformed input, arguments, corpus, and known failures;
+  - coordinator exceptions exiting 3;
+  - corpus pass/xfail/fail/xpass and hash tampering;
+  - checked-in corpus consistency and builder `--check`;
+  - known stress failures and the discovery safety ceiling;
+  - shell-independent identity;
+  - subprocess CLI from a foreign cwd with spaced paths;
+  - the sh wrapper's exit code.
+
+Decisions:
+
+- Entry point is `python -m lib_dst` plus wrappers rather than a console script, so
+  the application does not become an installable package.
+- `run` covers corpus, seeds (legacy and profile), `stress_default`, single stress
+  points, and limit discovery. Evolution remains a library API; it is not in the CLI.
+- The CLI pins `PYTHONHASHSEED=1`/`TZ=UTC` while generating traces (and restores the
+  caller's values afterwards), so generated traces record the environment their workers
+  actually use. Library generation is unchanged. Cross-OS or cross-Python traces still
+  differ because platform and Python version are recorded; replay warns on mismatch and
+  `--strict-env` rejects it.
+- `om_core_revision` is provenance, not identity: it was removed from
+  `StressPointResult.identity_dict()` (still present in `to_dict()`), so report identity
+  does not change on every commit. This changes stress identity hashes relative to the
+  Phase 4.5 record.
+- A coordinator-enforced timeout is classified `failed / policy / resource_exhaustion`
+  with code `wall-timeout` and host-dependent detail, not `unknown_abnormal_exit`.
+  Memory limits use `RLIMIT_AS` on POSIX; on Windows they are recorded as `unenforced`
+  rather than implemented with Job Objects in this phase.
+- Exit statuses are classified from positive evidence only. Windows NTSTATUS codes are
+  normalized from their unsigned form; POSIX `SIGSEGV`/`SIGBUS`/`SIGILL`/`SIGFPE`/
+  `SIGABRT` are crashes, `SIGXCPU`/`SIGXFSZ` resource exhaustion, and `SIGKILL` stays
+  `unknown_abnormal_exit`.
+- The two known OM Core defects are not repaired. They are expected failures in the
+  corpus and in `known_failures.json`; a repair surfaces as `xpass` (exit 1) and forces
+  the expectation to be updated. Declared persistence-fault traces are likewise
+  expected failures with their exact normalized code.
+- In limit discovery, `safety_ceiling` and `generation_rejected` points are reported as
+  `boundary` and do not make the run inconclusive.
+- Remote engine, solver, GUI, and multithreaded modes were not added; none has a
+  deterministic boundary yet.
+- Run artifacts default to `.om/dst-artifacts/` and are git-ignored with
+  `/dst-artifacts/` and `/dst-summary.json`. CI publishes them as workflow artifacts;
+  generated reports are never committed.
+- The PR workflow runs only the fixed corpus (about 27 s locally), not the pytest suite.
+  Seed batches and `stress_default` run on the nightly schedule. Nightly steps use
+  `continue-on-error` so every campaign runs and uploads, and a final step fails the job
+  if any did. Seed windows rotate by UTC day number and can be pinned through
+  `workflow_dispatch` inputs.
+- Corpus curation favours breadth over volume and is rebuilt only through
+  `scripts/dst_build_corpus.py`. Historical Phase 4 traces are copied byte-for-byte
+  (their recorded environment predates pinning). `.om/dst-corpus-run-001/` is left in
+  place as the source of those traces; whether to remove it from version control is the
+  maintainer's call.
+- A coordinator exception exits 3, never 1, so a harness defect cannot pose as an
+  engine failure. Malformed corpus or known-failures input exits 2.
+- The POSIX memory limit lowers only the soft `RLIMIT_AS`, capped at the existing hard
+  limit, so requesting more than the hard limit cannot stop a worker from starting.
+- `classify_outcome` was extracted from `evaluate_stress_trace` with an unchanged
+  mapping, so Phase 4.5 stress classification is behaviourally identical.
+
+Discoveries:
+
+- Windows `subprocess` reports NTSTATUS exit codes unsigned (`0xC0000017` arrives as
+  `3221225495`). The Phase 4.5 classifier only listed signed values, so real Windows
+  memory/crash exits could never be recognized; they were safely but uselessly reported
+  as unknown.
+- Trace hashes depended on the coordinator shell: `run_stress_default(4500)` produced
+  identity `f266ab8e…` with `PYTHONHASHSEED`/`TZ` unset and `a0cf5ece…` with
+  `PYTHONHASHSEED=1 TZ=UTC`, neither matching the recorded Phase 4.5 `6ced5209…`.
+  Results (18 pass, 2 known defects) were identical in all three.
+- The legacy `run_batch` worker checks only the oracle and returns an aggregate digest,
+  and every runner helper uses `check=True`; neither is suitable for attributing CI
+  failures, hence the separate per-seed protocol.
+- Worker startup dominates small traces: one evaluation costs about 1 s regardless of
+  profile, while a 50-seed legacy batch takes about 2 s. Batching seeds per worker is
+  therefore the main throughput lever. Corpus entries stay one-per-worker for isolation.
+- `InvariantCheck` stores only observation digests, so canonical diffs needed the
+  optional `evidence` side channel rather than a report-schema change.
+- Pinning the environment inside the CLI process must be scoped and restored. Leaving
+  `PYTHONHASHSEED`/`TZ` modified would change the descriptors of traces generated later
+  in the same interpreter (for example in pytest).
+- The root-level `trace.json` and the historical evolution traces record Python 3.14.0,
+  `python_hash_seed: random`, and `timezone: system`. They replay with a mismatch
+  warning and are rejected under `--strict-env`. The corpus traces record `win32`, so
+  the Ubuntu PR job replays them with a warning; outcomes do not depend on it.
+- Without an explicit `shell:`, GitHub Actions runs steps with `bash -e` (no
+  `pipefail`). The first draft of the PR workflow piped through `tee` and would have
+  reported success for a failing corpus; it was caught in self-review before any run.
+- Writing files through Python text mode on this Windows checkout (`autocrlf=true`)
+  produced mixed LF/CRLF endings in edited modules; they were normalized to CRLF.
+
+Measured throughput (this Windows machine, Python 3.12.1, one worker at a time;
+`measurements.json`): legacy seeds 22.5/s, `small` 20.1/s, `medium` 14.3/s, `large`
+5.7/s; the 25-entry corpus 27 s; CLI `stress_default` about 25 s. Nightly defaults
+(5000 legacy, 2000 small, 500 medium, 200 large, `stress_default`) take about
+8 minutes locally. A million legacy seeds would need about 12 runner-hours per
+night at this rate and is not adopted. Hosted-runner throughput is not yet measured.
+
+Validation performed (2026-11-17):
+
+- `.venv/Scripts/python.exe -m pytest tests/test_dst_phase5.py -q`: 33 passed.
+- `.venv/Scripts/python.exe -m pytest tests -q`: 171 passed.
+- Self-review fixes before commit: the PR workflow sets `shell: bash` so `pipefail`
+  stops `| tee` from masking the exit code; an unexpected coordinator exception exits
+  3 (not 1); a malformed corpus manifest or known-failures file exits 2; the POSIX
+  memory limit lowers only the soft `RLIMIT_AS`, capped at the existing hard limit.
+- `.venv/Scripts/python.exe -m compileall -q lib_dst scripts`: passed.
+- `git diff --check`: passed.
+- `python -m lib_dst run --corpus tests/dst_corpus`: 20 pass, 5 xfail, exit 0.
+- CLI `run --stress-default --known-failures tests/dst_corpus/known_failures.json` from
+  two shells (`PYTHONHASHSEED`/`TZ` unset, and `777`/`America/New_York`) produced the
+  identical summary identity `a91dc35f…` and stress report identity
+  `981c2c28988f69f1b0816e99ca4dad395b45531bf756532d0a88369b5f82fbc9`
+  (18 pass, 2 xfail). This is the new pinned baseline for Windows/Python 3.12.1.
+- A persistence-fault trace replayed and shrank through the CLI; the minimized trace
+  reproduced the same signature in a clean worker.
+- Not yet validated: the GitHub Actions workflows have not run on hosted runners, and
+  POSIX memory enforcement and signal classification have been verified only by tests
+  that run on Windows.
+
+Open items after Phase 5:
+
+- Run both workflows on hosted runners. Confirm the 8192 MB `--memory-mb` setting does
+  not trip on Linux scientific-library address-space reservations, then record
+  hosted-runner throughput and adjust the nightly counts from `measurements.json`.
+- Record a Linux `stress_default` baseline identity alongside the Windows one; trace
+  hashes legitimately differ by platform.
+- Windows memory enforcement (Job Objects) remains unimplemented and is reported as
+  `unenforced`.
+- Repairing the UDF and formatting command-boundary defects remains out of scope. When
+  either is fixed, update `tests/dst_corpus/manifest.json` (via the builder) and
+  `known_failures.json`.
+- Corpus-wide runs execute one worker at a time. Parallel workers (`--jobs`) were not
+  added; ordering-stable aggregation would be needed first.
+- When committing, set the executable bit on the POSIX wrapper:
+  `git add --chmod=+x om-dst`.
+
 ---
 
 ## 13. Minimal Real-Engine Harness Shape

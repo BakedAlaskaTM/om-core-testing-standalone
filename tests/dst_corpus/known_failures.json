@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "description": "Known OM Core command-boundary defects (plan.md, Phase 4.5). A match is reported as xfail; a pass becomes xpass (exit 1) so this file must be updated when the defect is repaired.",
+  "stress_axes": {
+    "format_volume": {
+      "verdict": "failed",
+      "origin": "engine",
+      "kind": "controlled_engine_error",
+      "code": "invalid-item-key",
+      "reason": "set_property formatting stores semantic Dimension.Item selectors as item-ID cube keys"
+    },
+    "udf_depth": {
+      "verdict": "failed",
+      "origin": "engine",
+      "kind": "controlled_engine_error",
+      "code": "RuntimeError",
+      "reason": "create_udf requires engine.udf_registry, which the public Engine facade does not expose"
+    }
+  }
+}

@@ -6,18 +6,16 @@ import contextlib
 import hashlib
 import io
 import json
-import os
-import subprocess
-import sys
 import time
 import tracemalloc
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterable
 
-from lib_dst.failures import capture_failure
+from lib_dst.failures import FailureOutcome, capture_failure
 from lib_dst.faults import FaultDecision, with_faults
 from lib_dst.invariants import PERSISTENCE_PATH
 from lib_dst.profiles import profile_names
+from lib_dst.provenance import om_core_revision
 from lib_dst.scale_generator import (
     WorkloadBudgetError,
     generate_profile_trace,
@@ -106,6 +104,8 @@ class StressPointResult:
         return self.classification.verdict == "passed"
 
     def identity_dict(self) -> dict[str, Any]:
+        # The OM Core revision is provenance, not identity: including it would change
+        # every report hash on every commit even when all results are identical.
         return {
             "axis": self.axis,
             "requested_value": self.requested_value,
@@ -114,11 +114,11 @@ class StressPointResult:
             "classification": self.classification.to_dict(),
             "deterministic_evidence": self.deterministic_evidence,
             "environment": self.environment,
-            "om_core_revision": self.om_core_revision,
         }
 
     def to_dict(self) -> dict[str, Any]:
         value = self.identity_dict()
+        value["om_core_revision"] = self.om_core_revision
         value["measurements"] = self.measurements.to_dict()
         value["raw_exit_evidence"] = self.raw_exit_evidence
         return value
@@ -253,6 +253,49 @@ STRESS_DEFAULT_VALUES: tuple[tuple[str, int], ...] = (
 )
 
 
+def classify_outcome(
+    outcome: FailureOutcome, scheduled_passed: bool = True
+) -> tuple[StressClassification, dict[str, Any]]:
+    """Map a normalized worker outcome onto the verdict/origin/kind classification."""
+
+    if not outcome.failed and scheduled_passed:
+        classification = StressClassification("passed", "none", "pass", "ok")
+        return classification, {"failure_signature": None, "scheduled_passed": True}
+    if not scheduled_passed:
+        classification = StressClassification(
+            "failed", "engine", "correctness_mismatch", "scheduled-invariant"
+        )
+        return classification, {"failure_signature": None, "scheduled_passed": False}
+    assert outcome.signature is not None
+    signature = outcome.signature.to_dict()
+    category = signature["category"]
+    if category == "invariant":
+        classification = StressClassification(
+            "failed", "engine", "correctness_mismatch", signature["code"]
+        )
+    elif category in {"runtime", "persistence"}:
+        classification = StressClassification(
+            "failed", "engine", "controlled_engine_error", signature["code"]
+        )
+    elif category == "unexpected" and signature["code"] in {
+        "RuntimeError",
+        "RecursionError",
+        "RuleValidationError",
+    }:
+        classification = StressClassification(
+            "failed", "engine", "controlled_engine_error", signature["code"]
+        )
+    elif category == "validation":
+        classification = StressClassification(
+            "inconclusive", "harness", "harness_error", signature["code"]
+        )
+    else:
+        classification = StressClassification(
+            "inconclusive", "worker", "worker_exception", signature["code"]
+        )
+    return classification, {"failure_signature": signature, "scheduled_passed": scheduled_passed}
+
+
 def evaluate_stress_trace(trace: TraceTranscript) -> dict[str, Any]:
     """Worker-side execution. All expected failures are returned as JSON."""
 
@@ -267,43 +310,7 @@ def evaluate_stress_trace(trace: TraceTranscript) -> dict[str, Any]:
             scheduled_passed = True
             if trace.metadata.get("scheduler") is not None and not outcome.failed:
                 scheduled_passed = execute_scheduled_trace(trace).passed
-        if not outcome.failed and scheduled_passed:
-            classification = StressClassification("passed", "none", "pass", "ok")
-            evidence = {"failure_signature": None, "scheduled_passed": scheduled_passed}
-        elif not scheduled_passed:
-            classification = StressClassification(
-                "failed", "engine", "correctness_mismatch", "scheduled-invariant"
-            )
-            evidence = {"failure_signature": None, "scheduled_passed": False}
-        else:
-            assert outcome.signature is not None
-            signature = outcome.signature.to_dict()
-            category = signature["category"]
-            if category == "invariant":
-                classification = StressClassification(
-                    "failed", "engine", "correctness_mismatch", signature["code"]
-                )
-            elif category in {"runtime", "persistence"}:
-                classification = StressClassification(
-                    "failed", "engine", "controlled_engine_error", signature["code"]
-                )
-            elif category == "unexpected" and signature["code"] in {
-                "RuntimeError",
-                "RecursionError",
-                "RuleValidationError",
-            }:
-                classification = StressClassification(
-                    "failed", "engine", "controlled_engine_error", signature["code"]
-                )
-            elif category == "validation":
-                classification = StressClassification(
-                    "inconclusive", "harness", "harness_error", signature["code"]
-                )
-            else:
-                classification = StressClassification(
-                    "inconclusive", "worker", "worker_exception", signature["code"]
-                )
-            evidence = {"failure_signature": signature, "scheduled_passed": scheduled_passed}
+        classification, evidence = classify_outcome(outcome, scheduled_passed)
         report_payload = outcome.to_json()
         try:
             persistence_bytes = len(storage.payload(PERSISTENCE_PATH).encode("utf-8"))
@@ -341,14 +348,76 @@ def evaluate_stress_trace(trace: TraceTranscript) -> dict[str, Any]:
     }
 
 
+# Windows reports NTSTATUS exit codes as unsigned 32-bit values (for example
+# 3221225495 for 0xC0000017). Older callers and tests used the signed form; both are
+# normalized with ``& 0xFFFFFFFF`` before lookup.
 _WINDOWS_RESOURCE_CODES = {
-    -1073741801,  # 0xC0000017 STATUS_NO_MEMORY
-    -1073741571,  # 0xC00000FD STATUS_STACK_OVERFLOW
+    0xC0000017,  # STATUS_NO_MEMORY
+    0xC00000FD,  # STATUS_STACK_OVERFLOW
 }
 _WINDOWS_CRASH_CODES = {
-    -1073741819,  # 0xC0000005 STATUS_ACCESS_VIOLATION
-    -1073740791,  # 0xC0000409 STATUS_STACK_BUFFER_OVERRUN
+    0xC0000005,  # STATUS_ACCESS_VIOLATION
+    0xC000001D,  # STATUS_ILLEGAL_INSTRUCTION
+    0xC0000409,  # STATUS_STACK_BUFFER_OVERRUN
 }
+# POSIX children killed by a signal have a negative return code. SIGKILL is deliberately
+# absent: the kernel OOM killer and an external kill are indistinguishable from it.
+_POSIX_CRASH_SIGNALS = {
+    4: "SIGILL",
+    6: "SIGABRT",
+    7: "SIGBUS",
+    8: "SIGFPE",
+    11: "SIGSEGV",
+}
+_POSIX_RESOURCE_SIGNALS = {
+    24: "SIGXCPU",
+    25: "SIGXFSZ",
+}
+
+
+def classify_exit_status(returncode: int) -> StressClassification:
+    """Classify a nonzero child exit status from positive platform evidence only."""
+
+    if -64 <= returncode < 0:
+        number = -returncode
+        if number in _POSIX_CRASH_SIGNALS:
+            return StressClassification(
+                "failed", "worker", "worker_crash", f"signal:{_POSIX_CRASH_SIGNALS[number]}"
+            )
+        if number in _POSIX_RESOURCE_SIGNALS:
+            return StressClassification(
+                "failed",
+                "os",
+                "resource_exhaustion",
+                f"signal:{_POSIX_RESOURCE_SIGNALS[number]}",
+            )
+        return StressClassification(
+            "inconclusive", "os", "unknown_abnormal_exit", f"signal:{number}"
+        )
+    status = returncode & 0xFFFFFFFF
+    if status in _WINDOWS_RESOURCE_CODES:
+        return StressClassification(
+            "failed", "os", "resource_exhaustion", f"ntstatus:0x{status:08X}"
+        )
+    if status in _WINDOWS_CRASH_CODES:
+        return StressClassification(
+            "failed", "worker", "worker_crash", f"ntstatus:0x{status:08X}"
+        )
+    return StressClassification(
+        "inconclusive", "os", "unknown_abnormal_exit", f"exit:{returncode}"
+    )
+
+
+def timeout_classification() -> StressClassification:
+    """A coordinator-enforced wall-clock limit is positive, host-dependent evidence."""
+
+    return StressClassification(
+        "failed",
+        "policy",
+        "resource_exhaustion",
+        "wall-timeout",
+        detail="host-dependent: enforced by the coordinator's wall-clock limit",
+    )
 
 
 def classify_worker_result(
@@ -367,18 +436,7 @@ def classify_worker_result(
         "stdout_line_count": len(stdout.splitlines()),
     }
     if returncode != 0:
-        if returncode in _WINDOWS_RESOURCE_CODES:
-            classification = StressClassification(
-                "failed", "os", "resource_exhaustion", f"exit:{returncode}"
-            )
-        elif returncode in _WINDOWS_CRASH_CODES:
-            classification = StressClassification(
-                "failed", "worker", "worker_crash", f"exit:{returncode}"
-            )
-        else:
-            classification = StressClassification(
-                "inconclusive", "os", "unknown_abnormal_exit", f"exit:{returncode}"
-            )
+        classification = classify_exit_status(returncode)
         return classification, {}, StressMeasurements(elapsed_ns, 0, 0, 0), raw
 
     try:
@@ -412,47 +470,45 @@ def run_stress_point_in_worker(
     python_hash_seed: str = "1",
     timeout_seconds: float | None = None,
     performance_threshold_seconds: float | None = None,
+    memory_mb: int | None = None,
 ) -> StressPointResult:
-    environment = dict(os.environ)
-    environment["PYTHONHASHSEED"] = python_hash_seed
-    environment["TZ"] = "UTC"
-    started = time.perf_counter_ns()
-    try:
-        completed = subprocess.run(
-            [sys.executable, "-m", "lib_dst.worker", "--stress-point-stdin"],
-            check=False,
-            capture_output=True,
-            text=True,
-            input=trace.to_json(),
-            env=environment,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        elapsed = time.perf_counter_ns() - started
-        classification = StressClassification(
-            "inconclusive", "os", "unknown_abnormal_exit", "coordinator-timeout"
-        )
+    from lib_dst.process import WorkerLimits, run_worker
+
+    completion = run_worker(
+        ["--stress-point-stdin"],
+        stdin=trace.to_json(),
+        limits=WorkerLimits(timeout_seconds=timeout_seconds, memory_mb=memory_mb),
+        python_hash_seed=python_hash_seed,
+    )
+    if completion.timed_out:
         return _point_result(
             trace,
             axis,
             requested_value,
-            classification,
+            timeout_classification(),
             {},
-            StressMeasurements(elapsed, 0, len(trace.to_json().encode("utf-8")), 0),
-            {"timeout_seconds": timeout_seconds, "stdout": str(exc.stdout or "")[-1000:]},
+            StressMeasurements(
+                completion.elapsed_ns, 0, len(trace.to_json().encode("utf-8")), 0
+            ),
+            {
+                **completion.limit_evidence(),
+                "stdout": completion.stdout[-1000:],
+                "stderr_tail": completion.stderr[-2000:],
+            },
         )
-    elapsed = time.perf_counter_ns() - started
+    assert completion.returncode is not None
     classification, evidence, measurements, raw = classify_worker_result(
-        returncode=completed.returncode,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        elapsed_ns=elapsed,
+        returncode=completion.returncode,
+        stdout=completion.stdout,
+        stderr=completion.stderr,
+        elapsed_ns=completion.elapsed_ns,
         performance_threshold_ns=(
             int(performance_threshold_seconds * 1_000_000_000)
             if performance_threshold_seconds is not None
             else None
         ),
     )
+    raw = {**raw, **completion.limit_evidence()}
     return _point_result(
         trace,
         axis,
@@ -483,7 +539,7 @@ def _point_result(
         deterministic_evidence=evidence,
         measurements=measurements,
         environment=trace.environment.to_dict(),
-        om_core_revision=os.environ.get("OM_CORE_REVISION", "unknown"),
+        om_core_revision=om_core_revision(),
         raw_exit_evidence=raw,
     )
 
@@ -506,7 +562,7 @@ def _synthetic_point(
         evidence or {},
         StressMeasurements(0, 0, 0, 0),
         environment,
-        os.environ.get("OM_CORE_REVISION", "unknown"),
+        om_core_revision(),
         {},
     )
 

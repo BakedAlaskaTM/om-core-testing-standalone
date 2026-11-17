@@ -1,0 +1,127 @@
+name: DST scheduled campaign
+
+# Bounded nightly seed batches plus the stress_default preset.
+#
+# Budgets come from measured local throughput (Windows, Python 3.12, one worker at a
+# time): legacy ~22 seeds/s, small ~20/s, medium ~14/s, large ~6/s, stress_default
+# ~25 s, corpus ~27 s. The default counts below take roughly 8 minutes locally; hosted
+# runners are slower, hence the generous job timeout. Re-measure (measurements.json in
+# each run directory) before raising counts. A million-seed target is NOT adopted: at
+# the measured legacy rate it would need ~12 runner-hours per night.
+#
+# Seed windows rotate daily (start = day-number * count) so successive nights cover new
+# seeds. Every run directory records its exact command; reproduce a night with
+# workflow_dispatch and the start values printed in the job log.
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      legacy_start:
+        description: "Legacy seed start (blank = rotate by day)"
+        required: false
+        default: ""
+      legacy_count:
+        description: "Legacy seed count"
+        required: false
+        default: "5000"
+      profile_start:
+        description: "Profile seed start (blank = rotate by day)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dst-scheduled-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  campaign:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      QT_QPA_PLATFORM: offscreen
+      OPENBLAS_NUM_THREADS: "1"
+      LEGACY_COUNT: ${{ github.event.inputs.legacy_count || '5000' }}
+      SMALL_COUNT: "2000"
+      MEDIUM_COUNT: "500"
+      LARGE_COUNT: "200"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Choose seed windows
+        run: |
+          day=$(( $(date -u +%s) / 86400 ))
+          legacy_start="${{ github.event.inputs.legacy_start }}"
+          profile_start="${{ github.event.inputs.profile_start }}"
+          [ -n "$legacy_start" ] || legacy_start=$(( day * LEGACY_COUNT ))
+          [ -n "$profile_start" ] || profile_start=$(( day * SMALL_COUNT ))
+          echo "LEGACY_START=$legacy_start" >> "$GITHUB_ENV"
+          echo "PROFILE_START=$profile_start" >> "$GITHUB_ENV"
+          echo "legacy seeds $legacy_start:$LEGACY_COUNT, profile seeds from $profile_start"
+
+      - name: Legacy seed batch
+        id: legacy
+        continue-on-error: true
+        run: uv run --frozen python -m lib_dst run --seeds "$LEGACY_START:$LEGACY_COUNT" --out dst-artifacts --timeout 300
+
+      - name: Small profile seed batch
+        id: small
+        continue-on-error: true
+        run: uv run --frozen python -m lib_dst run --seeds "$PROFILE_START:$SMALL_COUNT" --profile small --out dst-artifacts --timeout 300
+
+      - name: Medium profile seed batch
+        id: medium
+        continue-on-error: true
+        run: uv run --frozen python -m lib_dst run --seeds "$PROFILE_START:$MEDIUM_COUNT" --profile medium --out dst-artifacts --timeout 300
+
+      - name: Large profile seed batch
+        id: large
+        continue-on-error: true
+        run: uv run --frozen python -m lib_dst run --seeds "$PROFILE_START:$LARGE_COUNT" --profile large --out dst-artifacts --timeout 600
+
+      - name: stress_default preset
+        id: stress
+        continue-on-error: true
+        run: >
+          uv run --frozen python -m lib_dst run --stress-default
+          --known-failures tests/dst_corpus/known_failures.json
+          --out dst-artifacts --timeout 600
+
+      - name: Upload DST artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dst-scheduled-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dst-artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Fail if any campaign failed
+        if: always()
+        run: |
+          outcomes="${{ steps.legacy.outcome }} ${{ steps.small.outcome }} ${{ steps.medium.outcome }} ${{ steps.large.outcome }} ${{ steps.stress.outcome }}"
+          echo "step outcomes: $outcomes"
+          case "$outcomes" in
+            *failure*|*cancelled*) exit 1 ;;
+          esac

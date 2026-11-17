@@ -281,6 +281,34 @@ Run the test suite with the platform-specific script:
 .\test.ps1
 ```
 
+### Deterministic simulation testing (`om-dst`)
+
+The `om-dst` command runs generated or recorded traces against the real local engine
+in clean worker processes and writes replayable artifacts. Use the wrapper at the
+repository root (`./om-dst` or `.\om-dst.ps1`) or `python -m lib_dst` with the
+repository on `PYTHONPATH`:
+
+```powershell
+.\om-dst.ps1 run --corpus tests\dst_corpus                 # fixed PR regression corpus
+.\om-dst.ps1 run --seeds 0:1000                            # legacy seed batch
+.\om-dst.ps1 run --seeds 0:200 --profile medium            # profile seed batch
+.\om-dst.ps1 run --stress-default --known-failures tests\dst_corpus\known_failures.json
+.\om-dst.ps1 run --stress-axis rule_count --discover-limit --ceiling 64
+.\om-dst.ps1 replay path\to\trace.json [--strict-env]      # replay one trace
+.\om-dst.ps1 shrink path\to\trace.json                     # minimize one failure
+```
+
+Exit codes: `0` passed or matched expectations, `1` failures (including an expected
+failure that now passes), `2` usage error or invalid input, `3` inconclusive,
+`4` incompatible replay environment under `--strict-env`. Standard output is one JSON
+summary line; progress goes to standard error. Artifacts default to
+`.om/dst-artifacts/<run-id>/`: every failure keeps its original standalone
+`trace.json`, plus `outcome.json`, `environment.json`, a canonical `diff.json` where an
+invariant disagreed, and `minimized.json` when shrinking succeeds. An interrupted run
+can be continued with `--resume`; an existing complete run is replaced only with
+`--overwrite`. Limits: `--timeout` (all platforms) and `--memory-mb` (POSIX only;
+recorded as unenforced on Windows).
+
 ## Architecture
 
 OM Core is split into a session-scoped runtime layer, a command/query service

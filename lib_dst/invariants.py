@@ -78,8 +78,15 @@ def execute_convergence(
     *,
     workspace_adapter: InMemoryJsonAdapter | None = None,
     snapshot_adapter: SnapshotStoreAdapter | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> ConvergenceReport:
-    """Execute all Phase 2 invariants, using a genuinely fresh cold engine."""
+    """Execute all Phase 2 invariants, using a genuinely fresh cold engine.
+
+    When ``evidence`` is supplied, the canonical observation behind every invariant
+    check is stored in it by check name (plus ``incremental``). Reports only carry
+    observation digests; this optional side channel lets a coordinator publish a
+    canonical diff without changing the report schema.
+    """
     storage = workspace_adapter or InMemoryJsonAdapter()
     snapshots = snapshot_adapter or InMemorySnapshotAdapter()
     decisions = decisions_from_trace(trace)
@@ -185,6 +192,12 @@ def execute_convergence(
     finally:
         reset_runtime_state(runtime_b)
 
+    if evidence is not None:
+        evidence["incremental"] = incremental.to_dict()
+        evidence["cache-first-recalculation"] = after_first.to_dict()
+        evidence["cache-second-recalculation"] = after_second.to_dict()
+        evidence["snapshot-roundtrip"] = snapshot_observation.to_dict()
+        evidence["fresh-engine-convergence"] = cold.to_dict()
     checks = (
         _check("cache-first-recalculation", incremental, after_first),
         _check("cache-second-recalculation", incremental, after_second),

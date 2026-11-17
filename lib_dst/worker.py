@@ -64,6 +64,12 @@ def main() -> None:
     parser.add_argument("--scheduled-trace-stdin", action="store_true")
     parser.add_argument("--candidate-stdin", action="store_true")
     parser.add_argument("--stress-point-stdin", action="store_true", help=argparse.SUPPRESS)
+    # Phase 5 coordinator protocol. Internal building blocks of ``om-dst``; the public
+    # interface is ``python -m lib_dst``.
+    parser.add_argument("--evaluate-stdin", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--shrink-stdin", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--seed-outcomes", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--profile", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--export-script-stdin",
         nargs="?",
@@ -90,6 +96,21 @@ def main() -> None:
         with contextlib.redirect_stdout(io.StringIO()):
             evidence = execute_candidate(trace)
         print(evidence.to_json())
+        return
+    if args.evaluate_stdin or args.shrink_stdin or args.seed_outcomes:
+        from lib_dst import evaluation
+
+        if args.seed_outcomes:
+            for line in evaluation.iter_seed_outcomes(
+                args.start_seed, args.count, args.profile
+            ):
+                evaluation.emit(line)
+            return
+        trace = TraceTranscript.from_json(sys.stdin.read())
+        if args.evaluate_stdin:
+            evaluation.emit(evaluation.evaluate_trace(trace))
+        else:
+            evaluation.emit(evaluation.shrink_trace(trace))
         return
     if args.stress_point_stdin:
         trace = TraceTranscript.from_json(sys.stdin.read())

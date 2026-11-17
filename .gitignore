@@ -1,4 +1,8 @@
 venv
+# om-dst run artifacts (Phase 5): published by CI, never committed
+/.om/dst-artifacts/
+/dst-artifacts/
+/dst-summary.json
 */__pycache__/**
 *.pyc
 /tests/run*
