@@ -1,0 +1,3 @@
+# POSIX shell wrapper: sh cannot run CRLF scripts, so keep LF on every checkout,
+# including Windows with core.autocrlf=true.
+om-dst text eol=lf
