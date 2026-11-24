@@ -1663,8 +1663,12 @@ Discoveries:
 - Without an explicit `shell:`, GitHub Actions runs steps with `bash -e` (no
   `pipefail`). The first draft of the PR workflow piped through `tee` and would have
   reported success for a failing corpus; it was caught in self-review before any run.
-- Writing files through Python text mode on this Windows checkout (`autocrlf=true`)
-  produced mixed LF/CRLF endings in edited modules; they were normalized to CRLF.
+- `lib_dst/corpus.py` and `lib_dst/stress.py` had LF working-copy endings after editing
+  (Git warned about both), most likely from `sed -i`, and were converted to CRLF.
+  Corrected 2026-11-23: an earlier version of this entry reported mixed endings caused by
+  Python text mode. That rested on a faulty check: in this Git Bash, `grep -c $'\r'`
+  inside `"$(...)"` counts every line, even in a pure-LF file. Use
+  `git ls-files --eol` instead. Git stores these files as LF either way.
 
 Measured throughput (this Windows machine, Python 3.12.1, one worker at a time;
 `measurements.json`): legacy seeds 22.5/s, `small` 20.1/s, `medium` 14.3/s, `large`
